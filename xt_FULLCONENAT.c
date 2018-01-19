@@ -15,7 +15,7 @@
 #define MAX_PORTS 65536
 
 struct natmapping {
-	__be32 int_addr;
+  __be32 int_addr;
   uint16_t int_port;
 };
 
@@ -23,11 +23,11 @@ static struct natmapping mappings[MAX_PORTS];
 
 static int is_mapping_active(const struct natmapping* mapping)
 {
-	return mapping->int_addr != 0;
+  return mapping->int_addr != 0;
 }
 
 static __be32 get_device_ip(const struct net_device* dev) {
-	struct in_device* in_dev;
+  struct in_device* in_dev;
   struct in_ifaddr* if_info;
 
   in_dev = dev->ip_ptr;
@@ -35,21 +35,21 @@ static __be32 get_device_ip(const struct net_device* dev) {
     return 0;
   }
   if_info = in_dev->ifa_list;
-	if (if_info) {
-		return if_info->ifa_local;
-	} else {
-		return 0;
-	}
+  if (if_info) {
+    return if_info->ifa_local;
+  } else {
+    return 0;
+  }
 }
 
 static void tg_destroy(const struct xt_tgdtor_param *par)
 {
-	nf_ct_netns_put(par->net, par->family);
+  nf_ct_netns_put(par->net, par->family);
 }
 
 static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_param *par)
 {
-	const struct nf_nat_ipv4_multi_range_compat *mr;
+  const struct nf_nat_ipv4_multi_range_compat *mr;
   const struct nf_nat_ipv4_range *range;
 
   struct nf_conn *ct;
@@ -78,10 +78,10 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
   newrange.min_proto   = mr->range[0].min;
   newrange.max_proto   = mr->range[0].max;
 
-	if (xt_hooknum(par) == NF_INET_PRE_ROUTING) {
-		//inbound packets
+  if (xt_hooknum(par) == NF_INET_PRE_ROUTING) {
+    //inbound packets
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
-		
+
     protonum = (ct_tuple->dst).protonum;
     if (protonum != IPPROTO_UDP) {
       return ret;
@@ -101,10 +101,10 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
       return nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
     }
 
-	} else if (xt_hooknum(par) == NF_INET_POST_ROUTING) {
-		//outbound packets
+  } else if (xt_hooknum(par) == NF_INET_POST_ROUTING) {
+    //outbound packets
     new_ip = get_device_ip(skb->dev);
-		newrange.min_addr.ip = new_ip;
+    newrange.min_addr.ip = new_ip;
     newrange.max_addr.ip = new_ip;
     ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
@@ -125,52 +125,52 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     mapping = &mappings[port];
     mapping->int_addr = ip;
     mapping->int_port = original_port;
-	}
+  }
 
   return ret;
 }
 
 static int tg4_check(const struct xt_tgchk_param *par)
 {
-	// const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
+  // const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
 
-	return nf_ct_netns_get(par->net, par->family);
+  return nf_ct_netns_get(par->net, par->family);
 }
 
 static struct xt_target tg_reg[] __read_mostly = {
-	{
-		.name       = "FULLCONENAT",
-		.family     = NFPROTO_IPV4,
-		.revision   = 0,
-		.target     = fullconenat_tg4,
-		.targetsize = sizeof(struct nf_nat_ipv4_multi_range_compat),
-		.table      = "nat",
-		.hooks      = (1 << NF_INET_PRE_ROUTING) |
-		              (1 << NF_INET_POST_ROUTING) |
-		              (1 << NF_INET_LOCAL_OUT) |
-		              (1 << NF_INET_LOCAL_IN),
-		.checkentry = tg4_check,
-		.destroy    = tg_destroy,
-		.me         = THIS_MODULE,
-	},
+ {
+  .name       = "FULLCONENAT",
+  .family     = NFPROTO_IPV4,
+  .revision   = 0,
+  .target     = fullconenat_tg4,
+  .targetsize = sizeof(struct nf_nat_ipv4_multi_range_compat),
+  .table      = "nat",
+  .hooks      = (1 << NF_INET_PRE_ROUTING) |
+                (1 << NF_INET_POST_ROUTING) |
+                (1 << NF_INET_LOCAL_OUT) |
+                (1 << NF_INET_LOCAL_IN),
+  .checkentry = tg4_check,
+  .destroy    = tg_destroy,
+  .me         = THIS_MODULE,
+ },
 };
 
 static int __init tg_init(void)
 {
   int i;
   
-	printk("xt_FULLCONENAT init");
-	for (i=0; i<MAX_PORTS; i++) {
-		mappings[i].int_addr = 0;
-		mappings[i].int_port = 0;
-	}
-	return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
+  printk("xt_FULLCONENAT init");
+  for (i=0; i<MAX_PORTS; i++) {
+    mappings[i].int_addr = 0;
+    mappings[i].int_port = 0;
+  }
+  return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 
 static void tg_exit(void)
 {
-	printk("xt_FULLCONENAT exit");
-	xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
+  printk("xt_FULLCONENAT exit");
+  xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 
 module_init(tg_init);

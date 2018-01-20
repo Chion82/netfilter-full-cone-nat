@@ -17,6 +17,8 @@
 #define MAX_PORTS 65536
 
 struct natmapping {
+  struct natmapping *next;
+  uint16_t port;
   __be32 int_addr;  /* internal source ip address */
   uint16_t int_port; /* internal source port */
   struct nf_conntrack_tuple original_tuple;
@@ -24,7 +26,54 @@ struct natmapping {
 
 static DEFINE_SPINLOCK(fullconenat_lock);
 
-static struct natmapping mappings[MAX_PORTS];
+static struct natmapping* mappings_head;
+
+static struct natmapping* get_mapping(const uint16_t port) {
+  struct natmapping *p_current, *prev, *new;
+  p_current = mappings_head;
+  if (p_current == NULL) {
+    return NULL;
+  }
+  prev = NULL;
+  while (p_current) {
+    if (p_current->port == port) {
+      return p_current;
+    }
+    prev = p_current;
+    p_current = p_current->next;
+  }
+  new = kmalloc(sizeof(struct natmapping), GFP_KERNEL);
+  if (new == NULL) {
+    return NULL;
+  }
+  new->port = port;
+  new->next = NULL;
+  prev->next = new;
+  return new;
+}
+
+static void init_mappings(void) {
+  mappings_head = kmalloc(sizeof(struct natmapping), GFP_KERNEL);
+  if (mappings_head != NULL) {
+    mappings_head->next = NULL;
+    mappings_head->port = 0;
+    mappings_head->int_addr = 0;
+    mappings_head->int_port = 0;
+    memset(&mappings_head->original_tuple, 0, sizeof(struct nf_conntrack_tuple));
+  } else {
+    printk("xt_FULLCONENAT: mappings allocation failed. This may be caused by insufficient memory.");
+  }
+}
+
+static void destroy_mappings(void) {
+  static struct natmapping *p_current, *next;
+  p_current = mappings_head;
+  while (p_current) {
+    next = p_current->next;
+    kfree(p_current);
+    p_current = next;
+  }
+}
 
 static int is_mapping_active(const struct natmapping* mapping, const struct nf_conn *ct)
 {
@@ -32,7 +81,7 @@ static int is_mapping_active(const struct natmapping* mapping, const struct nf_c
   struct net *net;
   struct nf_conntrack_tuple_hash *original_tuple_hash;
 
-  if (mapping->int_addr == 0) {
+  if (mapping->port == 0 || mapping->int_addr == 0 || mapping->int_port == 0) {
     return 0;
   }
 
@@ -46,11 +95,8 @@ static int is_mapping_active(const struct natmapping* mapping, const struct nf_c
 
   if (original_tuple_hash) {
     /* if the corresponding conntrack is found, consider the mapping is active */
-    // struct nf_conntrack_tuple original_src_tuple = (original_tuple_hash[IP_CT_DIR_ORIGINAL]).tuple;
-    // printk("original_tuple_hash found: %pI4:%d", &(original_src_tuple.src.u3.ip), be16_to_cpu(original_src_tuple.src.u.udp.port));
     return 1;
   } else {
-    // printk("original_tuple_hash == NULL");
     return 0;
   }
 }
@@ -121,19 +167,22 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     spin_lock(&fullconenat_lock);
 
     /* find an active mapping based on the inbound port */
-    mapping = &mappings[port];
+    mapping = get_mapping(port);
+    if (mapping == NULL) {
+      spin_unlock(&fullconenat_lock);
+      return ret;
+    }
     if (is_mapping_active(mapping, ct)) {
-      // printk("DNAT: src_ip=%pI4; dst_port=%d; map_to=%pI4:%d \n", &ip, port, &(mapping->int_addr), mapping->int_port);
       newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
       newrange.min_addr.ip = mapping->int_addr;
       newrange.max_addr.ip = mapping->int_addr;
       newrange.min_proto.udp.port = cpu_to_be16(mapping->int_port);
       newrange.max_proto = newrange.min_proto;
 
-      spin_unlock(&fullconenat_lock);
-      return nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
+      ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
     }
     spin_unlock(&fullconenat_lock);
+    return ret;
 
 
   } else if (xt_hooknum(par) == NF_INET_POST_ROUTING) {
@@ -156,12 +205,15 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
-    // printk("SNAT: src_ip=%pI4; src_port=%d; mapped_src_port=%d; \n", &ip, original_port, port);
     
     spin_lock(&fullconenat_lock);
 
     /* store the mapping information to our mapping table */
-    mapping = &mappings[port];
+    mapping = get_mapping(port);
+    if (mapping == NULL) {
+      spin_unlock(&fullconenat_lock);
+      return ret;
+    }
     mapping->int_addr = ip;
     mapping->int_port = original_port;
     /* save the original source tuple */
@@ -203,19 +255,15 @@ static struct xt_target tg_reg[] __read_mostly = {
 
 static int __init tg_init(void)
 {
-  int i;
-  
-  // printk("xt_FULLCONENAT init");
-  for (i=0; i<MAX_PORTS; i++) {
-    mappings[i].int_addr = 0;
-    mappings[i].int_port = 0;
-  }
+  init_mappings();
+
   return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 
 static void tg_exit(void)
 {
-  // printk("xt_FULLCONENAT exit");
+  destroy_mappings();
+
   xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 

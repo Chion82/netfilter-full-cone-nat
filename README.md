@@ -1,5 +1,5 @@
 
-Implementation of full cone SNAT. Currently only UDP is supported and behavious for other protos are like MASQUERADE.
+Implementation of full cone SNAT. Currently only UDP is supported and actions for other protos are like MASQUERADE.
 
 Assume eth0 is external interface:
 

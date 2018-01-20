@@ -48,6 +48,10 @@ static struct natmapping* get_mapping(const uint16_t port) {
   }
   new->port = port;
   new->next = NULL;
+  new->int_addr = 0;
+  new->int_port = 0;
+  memset(&new->original_tuple, 0, sizeof(struct nf_conntrack_tuple));
+
   prev->next = new;
   return new;
 }

@@ -1,11 +1,12 @@
 
-Implementation of full cone SNAT. Currently only UDP is supported and actions for other protos are like MASQUERADE.
+Implementation of full cone SNAT.
 
-Assume eth0 is external interface:
+Assuming eth0 is external interface:
 ```
 iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT #same as MASQUERADE  
-iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
+iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT  #automatically restore NAT for inbound packets
 ```
+Currently only UDP traffic is supported for full-cone NAT. For other protos FULLCONENAT is equivalent to MASQUERADE.
 
 Build
 ======
@@ -74,12 +75,12 @@ IPtables extension
 Usage
 =====
 
-Assume eth0 is external interface:
+Assuming eth0 is external interface:
 
 Basic Usage:
 
 ```
-iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT #same as MASQUERADE  
+iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
 iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
 ```
 

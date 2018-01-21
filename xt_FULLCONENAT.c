@@ -35,7 +35,7 @@ static struct natmapping* get_mapping(const uint16_t port) {
     prev = p_current;
     p_current = p_current->next;
   }
-  new = kmalloc(sizeof(struct natmapping), GFP_KERNEL);
+  new = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
   if (new == NULL) {
     return NULL;
   }
@@ -50,7 +50,7 @@ static struct natmapping* get_mapping(const uint16_t port) {
 }
 
 static void init_mappings(void) {
-  mappings_head = kmalloc(sizeof(struct natmapping), GFP_KERNEL);
+  mappings_head = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
   if (mappings_head != NULL) {
     mappings_head->next = NULL;
     mappings_head->port = 0;

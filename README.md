@@ -1,5 +1,5 @@
 
-Implementation of full cone SNAT.
+Implementation of RFC3489-compatible full cone SNAT.
 
 Assuming eth0 is external interface:
 ```

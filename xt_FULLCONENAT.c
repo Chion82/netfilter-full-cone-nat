@@ -1,20 +1,13 @@
-#include <linux/ip.h>
-#include <linux/udp.h>
-#include <linux/time.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
-#include <linux/ipv6.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
-#include <linux/netfilter_ipv6.h>
 #include <linux/netfilter/x_tables.h>
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_core.h>
-
-#define MAX_PORTS 65536
 
 struct natmapping {
   struct natmapping *next;

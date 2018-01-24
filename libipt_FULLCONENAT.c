@@ -147,28 +147,6 @@ FULLCONENAT_save(const void *ip, const struct xt_entry_target *target)
 		printf(" --random-fully");
 }
 
-static int FULLCONENAT_xlate(struct xt_xlate *xl,
-			    const struct xt_xlate_tg_params *params)
-{
-	const struct nf_nat_ipv4_multi_range_compat *mr =
-		(const void *)params->target->data;
-	const struct nf_nat_ipv4_range *r = &mr->range[0];
-
-	xt_xlate_add(xl, "fullconenat");
-
-	if (r->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
-		xt_xlate_add(xl, " to :%hu", ntohs(r->min.tcp.port));
-		if (r->max.tcp.port != r->min.tcp.port)
-			xt_xlate_add(xl, "-%hu", ntohs(r->max.tcp.port));
-        }
-
-	xt_xlate_add(xl, " ");
-	if (r->flags & NF_NAT_RANGE_PROTO_RANDOM)
-		xt_xlate_add(xl, "random ");
-
-	return 1;
-}
-
 static struct xtables_target fullconenat_tg_reg = {
 	.name		= "FULLCONENAT",
 	.version	= XTABLES_VERSION,
@@ -181,7 +159,6 @@ static struct xtables_target fullconenat_tg_reg = {
 	.print		= FULLCONENAT_print,
 	.save		= FULLCONENAT_save,
 	.x6_options	= FULLCONENAT_opts,
-	.xlate		= FULLCONENAT_xlate,
 };
 
 void _init(void)

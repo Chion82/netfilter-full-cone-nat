@@ -23,7 +23,7 @@ Kernel Module
 obj-$(CONFIG_NETFILTER_XT_TARGET_FULLCONENAT) += xt_FULLCONENAT.o
 ```
 
-3. Insert following section to `kernel-source/net/ipv4/netfilter/Kconfig` right after `config IP_NF_TARGET_NETMAP` section:
+3. Insert following section into `kernel-source/net/ipv4/netfilter/Kconfig` right after `config IP_NF_TARGET_NETMAP` section:
 
 ```
 config IP_NF_TARGET_FULLCONENAT
@@ -37,7 +37,7 @@ config IP_NF_TARGET_FULLCONENAT
 
 ```
 
-4. Insert following section to `kernel-source/net/netfilter/Kconfig` right after `config NETFILTER_XT_TARGET_NETMAP` section:
+4. Insert following section into `kernel-source/net/netfilter/Kconfig` right after `config NETFILTER_XT_TARGET_NETMAP` section:
 
 ```
 config NETFILTER_XT_TARGET_FULLCONENAT
@@ -70,7 +70,7 @@ IPtables extension
 
 1. Copy libipt_FULLCONENAT.c and libipt_FULLCONENAT.t to `iptables-source/extensions`.
 
-2. Under the iptables source directory, `./configure`, `make` and `make install`
+2. Under the iptables source directory, `./configure`(use `--prefix` to replace your current `iptables` by looking at `which iptables`), `make` and `make install`
 
 Usage
 =====

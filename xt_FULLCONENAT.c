@@ -268,6 +268,6 @@ module_init(tg_init);
 module_exit(tg_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Xtables: implementation of UDP-only full cone NAT");
+MODULE_DESCRIPTION("Xtables: implementation of RFC3489 full cone NAT");
 MODULE_AUTHOR("Chion Tang <tech@chionlab.moe>");
 MODULE_ALIAS("ipt_FULLCONENAT");

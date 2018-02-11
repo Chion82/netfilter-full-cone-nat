@@ -1,5 +1,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/types.h>
+#include <linux/hashtable.h>
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/netfilter.h>
@@ -10,65 +12,48 @@
 #include <net/netfilter/nf_conntrack_core.h>
 
 struct natmapping {
-  struct natmapping *next;
   uint16_t port;
   __be32 int_addr;  /* internal source ip address */
   uint16_t int_port; /* internal source port */
   struct nf_conntrack_tuple original_tuple;
+
+  struct hlist_node node;
 };
+
+static DEFINE_HASHTABLE(mapping_table, 10);
 
 static DEFINE_SPINLOCK(fullconenat_lock);
 
-static struct natmapping* mappings_head;
-
 static struct natmapping* get_mapping(const uint16_t port) {
-  struct natmapping *p_current, *prev, *new;
-  p_current = mappings_head;
-  if (p_current == NULL) {
-    return NULL;
-  }
-  prev = NULL;
-  while (p_current) {
+  struct natmapping *p_current, *p_new;
+
+  hash_for_each_possible(mapping_table, p_current, node, port) {
     if (p_current->port == port) {
       return p_current;
     }
-    prev = p_current;
-    p_current = p_current->next;
   }
-  new = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
-  if (new == NULL) {
+
+  p_new = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
+  if (p_new == NULL) {
     return NULL;
   }
-  new->port = port;
-  new->next = NULL;
-  new->int_addr = 0;
-  new->int_port = 0;
-  memset(&new->original_tuple, 0, sizeof(struct nf_conntrack_tuple));
+  p_new->port = port;
+  p_new->int_addr = 0;
+  p_new->int_port = 0;
+  memset(&p_new->original_tuple, 0, sizeof(struct nf_conntrack_tuple));
 
-  prev->next = new;
-  return new;
-}
+  hash_add(mapping_table, &p_new->node, port);
 
-static void init_mappings(void) {
-  mappings_head = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
-  if (mappings_head != NULL) {
-    mappings_head->next = NULL;
-    mappings_head->port = 0;
-    mappings_head->int_addr = 0;
-    mappings_head->int_port = 0;
-    memset(&mappings_head->original_tuple, 0, sizeof(struct nf_conntrack_tuple));
-  } else {
-    printk("xt_FULLCONENAT: mappings allocation failed. This may be caused by insufficient memory.");
-  }
+  return p_new;
 }
 
 static void destroy_mappings(void) {
-  static struct natmapping *p_current, *next;
-  p_current = mappings_head;
-  while (p_current) {
-    next = p_current->next;
+  struct natmapping *p_current;
+  struct hlist_node *tmp;
+  int i;
+  hash_for_each_safe(mapping_table, i, tmp, p_current, node) {
+    hash_del(&p_current->node);
     kfree(p_current);
-    p_current = next;
   }
 }
 
@@ -252,8 +237,6 @@ static struct xt_target tg_reg[] __read_mostly = {
 
 static int __init tg_init(void)
 {
-  init_mappings();
-
   return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 

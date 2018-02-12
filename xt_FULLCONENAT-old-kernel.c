@@ -259,9 +259,9 @@ static int __init tg_init(void)
 
 static void tg_exit(void)
 {
-  destroy_mappings();
-
   xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
+
+  destroy_mappings();
 }
 
 module_init(tg_init);

@@ -241,9 +241,7 @@ static struct xt_target tg_reg[] __read_mostly = {
   .targetsize = sizeof(struct nf_nat_ipv4_multi_range_compat),
   .table      = "nat",
   .hooks      = (1 << NF_INET_PRE_ROUTING) |
-                (1 << NF_INET_POST_ROUTING) |
-                (1 << NF_INET_LOCAL_OUT) |
-                (1 << NF_INET_LOCAL_IN),
+                (1 << NF_INET_POST_ROUTING),
   .checkentry = tg4_check,
   .destroy    = tg_destroy,
   .me         = THIS_MODULE,

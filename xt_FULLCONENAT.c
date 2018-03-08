@@ -180,21 +180,24 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
 
   } else if (xt_hooknum(par) == NF_INET_POST_ROUTING) {
     /* outbound packets */
-    ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
-    ip = (ct_tuple_origin->src).u3.ip;
-    original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
-
     spin_lock(&fullconenat_lock);
 
-    /* outbound nat: if a previously established mapping is active,
-    we will reuse that mapping. */
-    src_mapping = get_mapping_by_original_src(ip, original_port);
-    if ((ct_tuple_origin->dst).protonum == IPPROTO_UDP
-      && src_mapping != NULL
-      && is_mapping_active(src_mapping, ct)) {
-      newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
-      newrange.min_proto.udp.port = cpu_to_be16(src_mapping->port);
-      newrange.max_proto = newrange.min_proto;
+    ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+    protonum = (ct_tuple_origin->dst).protonum;
+
+    if (protonum == IPPROTO_UDP) {
+      ip = (ct_tuple_origin->src).u3.ip;
+      original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
+
+      /* outbound nat: if a previously established mapping is active,
+      we will reuse that mapping. */
+
+      src_mapping = get_mapping_by_original_src(ip, original_port);
+      if (src_mapping != NULL && is_mapping_active(src_mapping, ct)) {
+        newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
+        newrange.min_proto.udp.port = cpu_to_be16(src_mapping->port);
+        newrange.max_proto = newrange.min_proto;
+      }
     }
 
     new_ip = get_device_ip(skb->dev);
@@ -206,15 +209,12 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     /* the reply tuple contains the mapped port. */
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
     
-    protonum = (ct_tuple->dst).protonum;
     if (protonum != IPPROTO_UDP) {
       spin_unlock(&fullconenat_lock);
       return ret;
     }
 
-
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
-
 
     /* store the mapping information to our mapping table */
     mapping = get_mapping(port);
@@ -229,7 +229,6 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     
     spin_unlock(&fullconenat_lock);
 
-
     return ret;
   }
 
@@ -238,7 +237,6 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
 
 static int tg4_check(const struct xt_tgchk_param *par)
 {
-  // const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
 
   return nf_ct_netns_get(par->net, par->family);
 }

@@ -47,6 +47,17 @@ static struct natmapping* get_mapping(const uint16_t port) {
   return p_new;
 }
 
+static struct natmapping* get_mapping_by_original_src(const __be32 src_ip, const uint16_t src_port) {
+  struct natmapping *p_current;
+  int i;
+  hash_for_each(mapping_table, i, p_current, node) {
+    if (p_current->int_addr == src_ip && p_current->int_port == src_port) {
+      return p_current;
+    }
+  }
+  return NULL;
+}
+
 static void destroy_mappings(void) {
   struct natmapping *p_current;
   struct hlist_node *tmp;
@@ -113,7 +124,7 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
   enum ip_conntrack_info ctinfo;
   struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
 
-  struct natmapping* mapping;
+  struct natmapping *mapping, *src_mapping;
   unsigned int ret;
   struct nf_nat_range newrange;
 
@@ -169,26 +180,41 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
 
   } else if (xt_hooknum(par) == NF_INET_POST_ROUTING) {
     /* outbound packets */
+    ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+    ip = (ct_tuple_origin->src).u3.ip;
+    original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
+
+    spin_lock(&fullconenat_lock);
+
+    /* outbound nat: if a previously established mapping is active,
+    we will reuse that mapping. */
+    src_mapping = get_mapping_by_original_src(ip, original_port);
+    if ((ct_tuple_origin->dst).protonum == IPPROTO_UDP
+      && src_mapping != NULL
+      && is_mapping_active(src_mapping, ct)) {
+      newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
+      newrange.min_proto.udp.port = cpu_to_be16(src_mapping->port);
+      newrange.max_proto = newrange.min_proto;
+    }
+
     new_ip = get_device_ip(skb->dev);
     newrange.min_addr.ip = new_ip;
     newrange.max_addr.ip = new_ip;
+
     ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
-    ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
     /* the reply tuple contains the mapped port. */
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
     
     protonum = (ct_tuple->dst).protonum;
     if (protonum != IPPROTO_UDP) {
+      spin_unlock(&fullconenat_lock);
       return ret;
     }
 
-    ip = (ct_tuple_origin->src).u3.ip;
-    original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
+
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
-    
-    spin_lock(&fullconenat_lock);
 
     /* store the mapping information to our mapping table */
     mapping = get_mapping(port);

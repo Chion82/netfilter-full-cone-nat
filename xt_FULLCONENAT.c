@@ -24,13 +24,17 @@ static DEFINE_HASHTABLE(mapping_table, 10);
 
 static DEFINE_SPINLOCK(fullconenat_lock);
 
-static struct natmapping* get_mapping(const uint16_t port) {
+static struct natmapping* get_mapping(const uint16_t port, const int create_new) {
   struct natmapping *p_current, *p_new;
 
   hash_for_each_possible(mapping_table, p_current, node, port) {
     if (p_current->port == port) {
       return p_current;
     }
+  }
+
+  if (!create_new) {
+    return NULL;
   }
 
   p_new = kmalloc(sizeof(struct natmapping), GFP_ATOMIC);
@@ -62,10 +66,15 @@ static void destroy_mappings(void) {
   struct natmapping *p_current;
   struct hlist_node *tmp;
   int i;
+
+  spin_lock(&fullconenat_lock);
+
   hash_for_each_safe(mapping_table, i, tmp, p_current, node) {
     hash_del(&p_current->node);
     kfree(p_current);
   }
+
+  spin_unlock(&fullconenat_lock);
 }
 
 static int is_mapping_active(const struct natmapping* mapping, const struct nf_conn *ct)
@@ -94,6 +103,24 @@ static int is_mapping_active(const struct natmapping* mapping, const struct nf_c
   }
 }
 
+static void clear_inactive_mappings(const struct nf_conn *ct) {
+  struct natmapping *p_current;
+  struct hlist_node *tmp;
+  int i;
+
+  spin_lock(&fullconenat_lock);
+
+  hash_for_each_safe(mapping_table, i, tmp, p_current, node) {
+    if (!is_mapping_active(p_current, ct)) {
+      printk("clear mapping at ext port = %d", p_current->port);
+      hash_del(&p_current->node);
+      kfree(p_current);
+    }
+  }
+
+  spin_unlock(&fullconenat_lock);
+}
+
 static __be32 get_device_ip(const struct net_device* dev) {
   struct in_device* in_dev;
   struct in_ifaddr* if_info;
@@ -110,12 +137,12 @@ static __be32 get_device_ip(const struct net_device* dev) {
   }
 }
 
-static void tg_destroy(const struct xt_tgdtor_param *par)
+static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
 {
   nf_ct_netns_put(par->net, par->family);
 }
 
-static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_param *par)
+static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
   const struct nf_nat_ipv4_multi_range_compat *mr;
   const struct nf_nat_ipv4_range *range;
@@ -140,6 +167,8 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
 
   ct = nf_ct_get(skb, &ctinfo);
 
+  clear_inactive_mappings(ct);
+
   memset(&newrange.min_addr, 0, sizeof(newrange.min_addr));
   memset(&newrange.max_addr, 0, sizeof(newrange.max_addr));
   newrange.flags       = mr->range[0].flags | NF_NAT_RANGE_MAP_IPS;
@@ -160,7 +189,7 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     spin_lock(&fullconenat_lock);
 
     /* find an active mapping based on the inbound port */
-    mapping = get_mapping(port);
+    mapping = get_mapping(port, 0);
     if (mapping == NULL) {
       spin_unlock(&fullconenat_lock);
       return ret;
@@ -189,14 +218,28 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
       ip = (ct_tuple_origin->src).u3.ip;
       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
 
-      /* outbound nat: if a previously established mapping is active,
-      we will reuse that mapping. */
-
       src_mapping = get_mapping_by_original_src(ip, original_port);
       if (src_mapping != NULL && is_mapping_active(src_mapping, ct)) {
+
+        /* outbound nat: if a previously established mapping is active,
+        we will reuse that mapping. */
+
         newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
         newrange.min_proto.udp.port = cpu_to_be16(src_mapping->port);
         newrange.max_proto = newrange.min_proto;
+
+      } else if (!(newrange.flags & NF_NAT_RANGE_PROTO_RANDOM)
+        && !(newrange.flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+
+        /* if multiple LAN hosts are using the same source port
+        and any PROTO_RANDOM is not specified,
+        we force a random port allocation to avoid collision. */
+
+        src_mapping = get_mapping(original_port, 0);
+        if (src_mapping != NULL
+          && is_mapping_active(src_mapping, ct)) {
+          newrange.flags |= NF_NAT_RANGE_PROTO_RANDOM;
+        }
       }
     }
 
@@ -217,7 +260,7 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
     /* store the mapping information to our mapping table */
-    mapping = get_mapping(port);
+    mapping = get_mapping(port, 1);
     if (mapping == NULL) {
       spin_unlock(&fullconenat_lock);
       return ret;
@@ -235,7 +278,7 @@ static unsigned int fullconenat_tg4(struct sk_buff *skb, const struct xt_action_
   return ret;
 }
 
-static int tg4_check(const struct xt_tgchk_param *par)
+static int fullconenat_tg_check(const struct xt_tgchk_param *par)
 {
 
   return nf_ct_netns_get(par->net, par->family);
@@ -246,13 +289,13 @@ static struct xt_target tg_reg[] __read_mostly = {
   .name       = "FULLCONENAT",
   .family     = NFPROTO_IPV4,
   .revision   = 0,
-  .target     = fullconenat_tg4,
+  .target     = fullconenat_tg,
   .targetsize = sizeof(struct nf_nat_ipv4_multi_range_compat),
   .table      = "nat",
   .hooks      = (1 << NF_INET_PRE_ROUTING) |
                 (1 << NF_INET_POST_ROUTING),
-  .checkentry = tg4_check,
-  .destroy    = tg_destroy,
+  .checkentry = fullconenat_tg_check,
+  .destroy    = fullconenat_tg_destroy,
   .me         = THIS_MODULE,
  },
 };

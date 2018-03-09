@@ -112,7 +112,6 @@ static void clear_inactive_mappings(const struct nf_conn *ct) {
 
   hash_for_each_safe(mapping_table, i, tmp, p_current, node) {
     if (!is_mapping_active(p_current, ct)) {
-      printk("clear mapping at ext port = %d", p_current->port);
       hash_del(&p_current->node);
       kfree(p_current);
     }

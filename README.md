@@ -14,7 +14,16 @@ Prerequisites:
 * kernel source  
 * iptables source (git://git.netfilter.org/iptables.git) 
 
-Kernel Module
+Replace `xt_FULLCONENAT.c` with `xt_FULLCONENAT-old-kernel.c` if your kernel version is somehow below 4.1x and have issue compiling the module source.
+
+Kernel Module (as standalone module)
+-------------
+```
+$ make
+# insmod xt_FULLCONENAT.ko
+```
+
+Kernel Module (in-tree building)
 -------------
 1. Copy xt_FULLCONENAT.c to `kernel-source/net/netfilter/xt_FULLCONENAT.c`   
 2. Append following line to `kernel-source/net/netfilter/Makefile`:

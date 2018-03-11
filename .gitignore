@@ -1,1 +1,8 @@
 .DS_Store
+.tmp_versions
+*.ko
+*.cmd
+*.o
+modules.order
+Module.symvers
+*.mod.c

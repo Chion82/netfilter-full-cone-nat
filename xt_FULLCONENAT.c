@@ -206,6 +206,9 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   uint16_t port, original_port, want_port;
   uint8_t protonum;
 
+  ip = 0;
+  original_port = 0;
+
   mr = par->targinfo;
   range = &mr->range[0];
 
@@ -291,13 +294,13 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
     ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
-    /* the reply tuple contains the mapped port. */
-    ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
-    
-    if (protonum != IPPROTO_UDP) {
+    if (protonum != IPPROTO_UDP || ret != NF_ACCEPT) {
       spin_unlock(&fullconenat_lock);
       return ret;
     }
+
+    /* the reply tuple contains the mapped port. */
+    ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
 
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 

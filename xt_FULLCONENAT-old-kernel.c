@@ -1,6 +1,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/random.h>
 #include <linux/hashtable.h>
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
@@ -143,6 +144,53 @@ static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
 
 }
 
+static uint16_t find_appropriate_port(const uint16_t original_port, const struct nf_nat_ipv4_range *range, struct nf_conn *ct) {
+  uint16_t min, start, selected, range_size, i;
+  struct natmapping* mapping = NULL;
+
+  if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+    min = be16_to_cpu((range->min).udp.port);
+    range_size = be16_to_cpu((range->max).udp.port) - min + 1;
+  } else {
+    /* minimum port is 1024. same behavior as default linux NAT. */
+    min = 1024;
+    range_size = 65535 - min + 1;
+  }
+
+  if ((range->flags & NF_NAT_RANGE_PROTO_RANDOM)
+    || (range->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+    /* for now we do the same thing for both --random and --random-fully */
+
+    /* select a random starting point */
+    start = (uint16_t)(prandom_u32() % (u32)range_size);
+  } else {
+
+    if ((original_port >= min && original_port <= min + range_size - 1)
+      || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
+      /* 1. try to preserve the port if it's available */
+      mapping = get_mapping(original_port, 0);
+      if (mapping == NULL || !(is_mapping_active(mapping, ct))) {
+        return original_port;
+      }
+    }
+
+    /* otherwise, we start from zero */
+    start = 0;
+  }
+
+  for (i = 0; i < range_size; i++) {
+    /* 2. try to find an available port */
+    selected = min + ((start + i) % range_size);
+    mapping = get_mapping(selected, 0);
+    if (mapping == NULL || !(is_mapping_active(mapping, ct))) {
+      return selected;
+    }
+  }
+
+  /* 3. at least we tried. rewrite a privous mapping. */
+  return min + start;
+}
+
 static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
   const struct nf_nat_ipv4_multi_range_compat *mr;
@@ -157,7 +205,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   struct nf_nat_range newrange;
 
   __be32 new_ip, ip;
-  uint16_t port, original_port;
+  uint16_t port, original_port, want_port;
   uint8_t protonum;
 
   mr = par->targinfo;
@@ -196,7 +244,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       return ret;
     }
     if (is_mapping_active(mapping, ct)) {
-      newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
+      newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
       newrange.min_addr.ip = mapping->int_addr;
       newrange.max_addr.ip = mapping->int_addr;
       newrange.min_proto.udp.port = cpu_to_be16(mapping->int_port);
@@ -225,22 +273,17 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
         /* outbound nat: if a previously established mapping is active,
         we will reuse that mapping. */
 
-        newrange.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
+        newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
         newrange.min_proto.udp.port = cpu_to_be16(src_mapping->port);
         newrange.max_proto = newrange.min_proto;
 
-      } else if (!(newrange.flags & NF_NAT_RANGE_PROTO_RANDOM)
-        && !(newrange.flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+      } else {
+        want_port = find_appropriate_port(original_port, range, ct);
 
-        /* if multiple LAN hosts are using the same source port
-        and any PROTO_RANDOM is not specified,
-        we force a random port allocation to avoid collision. */
+        newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
+        newrange.min_proto.udp.port = cpu_to_be16(want_port);
+        newrange.max_proto = newrange.min_proto;
 
-        src_mapping = get_mapping(original_port, 0);
-        if (src_mapping != NULL
-          && is_mapping_active(src_mapping, ct)) {
-          newrange.flags |= NF_NAT_RANGE_PROTO_RANDOM;
-        }
       }
     }
 

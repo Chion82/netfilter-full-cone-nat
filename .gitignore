@@ -6,3 +6,5 @@
 modules.order
 Module.symvers
 *.mod.c
+.idea
+cmake*

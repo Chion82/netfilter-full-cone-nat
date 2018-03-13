@@ -10,7 +10,9 @@
 #include <linux/netfilter/x_tables.h>
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_conntrack.h>
+#include <net/netfilter/nf_conntrack_tuple.h>
 #include <net/netfilter/nf_conntrack_core.h>
+#include <net/netfilter/nf_conntrack_ecache.h>
 
 struct natmapping {
   uint16_t port;
@@ -20,6 +22,10 @@ struct natmapping {
 
   struct hlist_node node;
 };
+
+static struct nf_ct_event_notifier ct_event_notifier;
+static int ct_event_notifier_registered __read_mostly = 0;
+static struct net *ct_event_net = NULL;
 
 static DEFINE_HASHTABLE(mapping_table, 10);
 
@@ -78,21 +84,28 @@ static void destroy_mappings(void) {
   spin_unlock(&fullconenat_lock);
 }
 
-static int is_mapping_active(const struct natmapping* mapping, const struct nf_conn *ct)
+/* Check if a mapping is valid.
+Possibly delete and free an invalid mapping. 
+*mapping should not be used anymore after check_mapping() returns 0. */
+static int check_mapping(struct natmapping* mapping, const struct nf_conn *ct)
 {
   const struct nf_conntrack_zone *zone;
   struct net *net;
   struct nf_conntrack_tuple_hash *original_tuple_hash;
 
-  if (mapping->port == 0 || mapping->int_addr == 0 || mapping->int_port == 0) {
+  if (mapping == NULL) {
     return 0;
+  }
+
+  if (mapping->port == 0 || mapping->int_addr == 0 || mapping->int_port == 0) {
+    goto del_mapping;
   }
 
   /* get corresponding conntrack from the saved tuple */
   net = nf_ct_net(ct);
   zone = nf_ct_zone(ct);
   if (net == NULL || zone == NULL) {
-    return 0;
+    goto del_mapping;
   }
   original_tuple_hash = nf_conntrack_find_get(net, zone, &mapping->original_tuple);
 
@@ -100,24 +113,72 @@ static int is_mapping_active(const struct natmapping* mapping, const struct nf_c
     /* if the corresponding conntrack is found, consider the mapping is active */
     return 1;
   } else {
-    return 0;
+    goto del_mapping;
   }
+
+del_mapping:
+  hash_del(&mapping->node);
+  kfree(mapping);
+  return 0;
 }
 
-static void clear_inactive_mappings(const struct nf_conn *ct) {
-  struct natmapping *p_current;
-  struct hlist_node *tmp;
-  int i;
+// conntrack destroy event callback
+static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
+  struct nf_conn *ct;
+  struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
+  struct natmapping *mapping;
+  uint8_t protonum;
+  uint16_t port;
+
+  ct = item->ct;
+  if (ct == NULL || !(events & (1 << IPCT_DESTROY))) {
+    return 0;
+  }
+
+  ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
+  ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+
+  protonum = (ct_tuple->dst).protonum;
+  if (protonum != IPPROTO_UDP) {
+    return 0;
+  }
+
+  port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
   spin_lock(&fullconenat_lock);
 
-  hash_for_each_safe(mapping_table, i, tmp, p_current, node) {
-    if (!is_mapping_active(p_current, ct)) {
-      hash_del(&p_current->node);
-      kfree(p_current);
-    }
+  mapping = get_mapping(port, 0);
+  if (mapping == NULL
+    || !nf_ct_tuple_equal(&mapping->original_tuple, ct_tuple_origin)) {
+    spin_unlock(&fullconenat_lock);
+    return 0;
   }
 
+  hash_del(&mapping->node);
+  kfree(mapping);
+
+  spin_unlock(&fullconenat_lock);
+
+  return 0;
+}
+
+static void check_register_ct_event_cb(struct net *net) {
+  spin_lock(&fullconenat_lock);
+  if (!ct_event_notifier_registered) {
+    ct_event_notifier.fcn = ct_event_cb;
+    nf_conntrack_register_notifier(net, &ct_event_notifier);
+    ct_event_notifier_registered = 1;
+    ct_event_net = net;
+  }
+  spin_unlock(&fullconenat_lock);
+}
+
+static void check_unregister_ct_event_cb(void) {
+  spin_lock(&fullconenat_lock);
+  if (ct_event_notifier_registered && ct_event_net != NULL) {
+    nf_conntrack_unregister_notifier(ct_event_net, &ct_event_notifier);
+    ct_event_notifier_registered = 0;
+  }
   spin_unlock(&fullconenat_lock);
 }
 
@@ -167,7 +228,7 @@ static uint16_t find_appropriate_port(const uint16_t original_port, const struct
       || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
       /* 1. try to preserve the port if it's available */
       mapping = get_mapping(original_port, 0);
-      if (mapping == NULL || !(is_mapping_active(mapping, ct))) {
+      if (mapping == NULL || !(check_mapping(mapping, ct))) {
         return original_port;
       }
     }
@@ -180,7 +241,7 @@ static uint16_t find_appropriate_port(const uint16_t original_port, const struct
     /* 2. try to find an available port */
     selected = min + ((start + i) % range_size);
     mapping = get_mapping(selected, 0);
-    if (mapping == NULL || !(is_mapping_active(mapping, ct))) {
+    if (mapping == NULL || !(check_mapping(mapping, ct))) {
       return selected;
     }
   }
@@ -209,6 +270,8 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   ip = 0;
   original_port = 0;
 
+  check_register_ct_event_cb(xt_net(par));
+
   mr = par->targinfo;
   range = &mr->range[0];
 
@@ -216,8 +279,6 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   ret = XT_CONTINUE;
 
   ct = nf_ct_get(skb, &ctinfo);
-
-  clear_inactive_mappings(ct);
 
   memset(&newrange.min_addr, 0, sizeof(newrange.min_addr));
   memset(&newrange.max_addr, 0, sizeof(newrange.max_addr));
@@ -244,7 +305,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       spin_unlock(&fullconenat_lock);
       return ret;
     }
-    if (is_mapping_active(mapping, ct)) {
+    if (check_mapping(mapping, ct)) {
       newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
       newrange.min_addr.ip = mapping->int_addr;
       newrange.max_addr.ip = mapping->int_addr;
@@ -269,7 +330,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
 
       src_mapping = get_mapping_by_original_src(ip, original_port);
-      if (src_mapping != NULL && is_mapping_active(src_mapping, ct)) {
+      if (src_mapping != NULL && check_mapping(src_mapping, ct)) {
 
         /* outbound nat: if a previously established mapping is active,
         we will reuse that mapping. */
@@ -345,20 +406,21 @@ static struct xt_target tg_reg[] __read_mostly = {
  },
 };
 
-static int __init tg_init(void)
+static int __init fullconenat_tg_init(void)
 {
   return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 
-static void tg_exit(void)
+static void fullconenat_tg_exit(void)
 {
+  check_unregister_ct_event_cb();
   xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
 
   destroy_mappings();
 }
 
-module_init(tg_init);
-module_exit(tg_exit);
+module_init(fullconenat_tg_init);
+module_exit(fullconenat_tg_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Xtables: implementation of RFC3489 full cone NAT");

@@ -48,6 +48,7 @@ struct nat_mapping {
 
 struct nf_ct_net_event {
   struct net *net;
+  u8 family;
   struct nf_ct_event_notifier ct_event_notifier;
   int refer_count;
 
@@ -55,6 +56,8 @@ struct nf_ct_net_event {
 };
 
 static LIST_HEAD(nf_ct_net_event_list);
+
+static DEFINE_MUTEX(nf_ct_net_event_lock);
 
 static DEFINE_HASHTABLE(mapping_table, 10);
 
@@ -413,33 +416,38 @@ static int fullconenat_tg_check(const struct xt_tgchk_param *par)
 
   struct net *net = par->net;
 
-  spin_lock(&fullconenat_lock);
+  mutex_lock(&nf_ct_net_event_lock);
 
   list_for_each(iter, &nf_ct_net_event_list) {
     net_event = list_entry(iter, struct nf_ct_net_event, node);
     if (net_event->net == net) {
       (net_event->refer_count)++;
-      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) net, net_event->refer_count);
+      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
       goto out;
     }
   }
 
-  net_event = kmalloc(sizeof(struct nf_ct_net_event), GFP_ATOMIC);
+  net_event = kmalloc(sizeof(struct nf_ct_net_event), GFP_KERNEL);
   if (net_event == NULL) {
     pr_debug("xt_FULLCONENAT: ERROR: kmalloc() for net_event failed.\n");
     goto out;
   }
   net_event->net = net;
+  net_event->family = par->family;
   (net_event->ct_event_notifier).fcn = ct_event_cb;
   net_event->refer_count = 1;
   list_add(&net_event->node, &nf_ct_net_event_list);
+
+  nf_ct_netns_get(net_event->net, net_event->family);
   nf_conntrack_register_notifier(net_event->net, &(net_event->ct_event_notifier));
 
-  pr_debug("xt_FULLCONENAT: ct_event_notifier registered for net addr %p\n", (void*) net);
-out:
-  spin_unlock(&fullconenat_lock);
+  pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
+  pr_debug("xt_FULLCONENAT: ct_event_notifier registered for net addr %p\n", (void*) (net_event->net));
 
-  return nf_ct_netns_get(par->net, par->family);
+out:
+  mutex_unlock(&nf_ct_net_event_lock);
+
+  return 0;
 }
 
 static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
@@ -449,27 +457,26 @@ static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
 
   struct net *net = par->net;
 
-  spin_lock(&fullconenat_lock);
+  mutex_lock(&nf_ct_net_event_lock);
 
   list_for_each_safe(iter, tmp_iter, &nf_ct_net_event_list) {
     net_event = list_entry(iter, struct nf_ct_net_event, node);
     if (net_event->net == net) {
       (net_event->refer_count)--;
-      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*)net, net_event->refer_count);
+      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
 
       if (net_event->refer_count <= 0) {
         nf_conntrack_unregister_notifier(net_event->net, &(net_event->ct_event_notifier));
-        
-        pr_debug("xt_FULLCONENAT: unregistered ct_net_event for net addr %p\n", (void*)net);
+        nf_ct_netns_put(net_event->net, net_event->family);
+
+        pr_debug("xt_FULLCONENAT: unregistered ct_net_event for net addr %p\n", (void*) (net_event->net));
         list_del(&net_event->node);
         kfree(net_event);
       }
     }
   }
 
-  spin_unlock(&fullconenat_lock);
-
-  nf_ct_netns_put(par->net, par->family);
+  mutex_unlock(&nf_ct_net_event_lock);
 }
 
 static struct xt_target tg_reg[] __read_mostly = {

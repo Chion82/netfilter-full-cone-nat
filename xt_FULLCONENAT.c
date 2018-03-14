@@ -53,7 +53,8 @@ struct nat_mapping {
   __be32 int_addr;   /* internal source ip address */
   uint16_t int_port; /* internal source port */
   int ifindex;       /* external interface index*/
-  int refer_count;   /* how many references linked to this mapping */
+  int refer_count;   /* how many references linked to this mapping
+                      * aka. length of original_tuples */
 
   struct list_head original_tuples;
 
@@ -79,6 +80,9 @@ static DEFINE_HASHTABLE(mapping_table_by_ext_port, HASHTABLE_BUCKET_BITS);
 static DEFINE_HASHTABLE(mapping_table_by_original_src, HASHTABLE_BUCKET_BITS);
 
 static DEFINE_SPINLOCK(fullconenat_lock);
+
+/* this is needed to avoid dead lock stuck in ct_event_cb */
+static atomic_t mapping_check_busy;
 
 static char tuple_tmp_string[512];
 static char* nf_ct_stringify_tuple(const struct nf_conntrack_tuple *t) {
@@ -218,8 +222,10 @@ static int check_mapping(struct nat_mapping* mapping) {
   list_for_each_safe(iter, tmp, &mapping->original_tuples) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
+    atomic_set(&mapping_check_busy, 1);
     if (nf_conntrack_find_get(original_tuple_item->net, 
       original_tuple_item->zone, &original_tuple_item->tuple) == NULL) {
+      atomic_set(&mapping_check_busy, 0);
 
       pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s expired. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
 
@@ -227,11 +233,12 @@ static int check_mapping(struct nat_mapping* mapping) {
       kfree(original_tuple_item);
       (mapping->refer_count)--;
     }
+    atomic_set(&mapping_check_busy, 0);
   }
 
   /* for dying/unconfirmed conntracks, an IPCT_DESTROY event may NOT be fired.
    * so we manually kill one of those conntracks once we acquire one. */
-  pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+  pr_debug("xt_FULLCONENAT: check_mapping() refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
   if (mapping->refer_count <= 0) {
     pr_debug("xt_FULLCONENAT: check_mapping(): kill dying/unconfirmed mapping at ext port %d\n", mapping->port);
     kill_mapping(mapping);
@@ -271,6 +278,13 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     return 0;
   }
 
+  if (atomic_read(&mapping_check_busy) > 0) {
+    /* if this event is triggered by nf_conntrack_find_get() called by check_mapping(),
+    * we just do nothing and let check_mapping() do the rest
+    * to avoid a dead spinlock. */
+    return 0;
+  }
+
   spin_lock(&fullconenat_lock);
 
   /* we dont know the conntrack direction for now so we try in both ways. */
@@ -305,7 +319,7 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   }
 
   /* then kill it if needed*/
-  pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+  pr_debug("xt_FULLCONENAT: ct_event_cb(): refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
   if (mapping->refer_count <= 0) {
     pr_debug("xt_FULLCONENAT: ct_event_cb(): kill expired mapping at ext port %d\n", mapping->port);
     kill_mapping(mapping);
@@ -456,7 +470,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
       if (ret == NF_ACCEPT) {
         add_original_tuple_to_mapping(mapping, ct_tuple_origin, net, zone);
-        pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+        pr_debug("xt_FULLCONENAT: fullconenat_tg(): INBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
       }
     }
     spin_unlock(&fullconenat_lock);
@@ -521,7 +535,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     }
     if (mapping != NULL) {
       add_original_tuple_to_mapping(mapping, ct_tuple_origin, net, zone);
-      pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+      pr_debug("xt_FULLCONENAT: fullconenat_tg(): OUTBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
     }
 
     spin_unlock(&fullconenat_lock);

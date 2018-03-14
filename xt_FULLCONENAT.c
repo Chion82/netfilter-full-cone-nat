@@ -48,6 +48,7 @@ struct nat_mapping {
   __be32 int_addr;   /* internal source ip address */
   uint16_t int_port; /* internal source port */
   int ifindex;       /* external interface index*/
+  int refer_count;   /* how many references linked to this mapping */
   struct nf_conntrack_tuple original_tuple;
 
   struct hlist_node node_by_ext_port;
@@ -94,6 +95,14 @@ static u32 hash_conntrack_raw(const struct nf_conntrack_tuple *tuple,
           tuple->dst.protonum));
 }
 
+static char tuple_tmp_string[512];
+static char* nf_ct_stringify_tuple(const struct nf_conntrack_tuple *t) {
+  snprintf(tuple_tmp_string, sizeof(tuple_tmp_string), "%pI4:%hu -> %pI4:%hu",
+         &t->src.u3.ip, be16_to_cpu(t->src.u.all),
+         &t->dst.u3.ip, be16_to_cpu(t->dst.u.all));
+  return tuple_tmp_string;
+}
+
 static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_t port, const __be32 int_addr, const uint16_t int_port, const int ifindex, const struct nf_conntrack_tuple* original_tuple) {
   struct nat_mapping *p_new;
   u32 hash_tuple, hash_src;
@@ -107,6 +116,7 @@ static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_
   p_new->int_addr = int_addr;
   p_new->int_port = int_port;
   p_new->ifindex = ifindex;
+  p_new->refer_count = 0;
   memcpy(&p_new->original_tuple, original_tuple, sizeof(struct nf_conntrack_tuple));
 
   hash_tuple = hash_conntrack_raw(original_tuple, net);
@@ -115,6 +125,9 @@ static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_
   hash_add(mapping_table_by_ext_port, &p_new->node_by_ext_port, port);
   hash_add(mapping_table_by_original_tuple, &p_new->node_by_original_tuple, hash_tuple);
   hash_add(mapping_table_by_original_src, &p_new->node_by_original_src, hash_src);
+
+  pr_debug("xt_FULLCONENAT: new mapping allocated for %pI4:%d ==> %d\n", 
+    &p_new->int_addr, p_new->int_port, p_new->port);
 
   return p_new;
 }
@@ -211,8 +224,12 @@ static int check_mapping(struct net *net, struct nf_conntrack_zone *zone, struct
 del_mapping:
   /* for dying/unconfirmed conntracks, an IPCT_DESTROY event may NOT be fired.
    * so we manually kill one of those conntracks once we acquire one. */
-  pr_debug("xt_FULLCONENAT: check_mapping(): kill dying/unconfirmed mapping at ext port %d\n", mapping->port);
-  kill_mapping(mapping);
+  (mapping->refer_count)--;
+  pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+  if (mapping->refer_count <= 0) {
+    pr_debug("xt_FULLCONENAT: check_mapping(): kill dying/unconfirmed mapping at ext port %d\n", mapping->port);
+    kill_mapping(mapping);
+  }
   return 0;
 }
 
@@ -249,8 +266,12 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   }
 
   /* then kill it */
-  pr_debug("xt_FULLCONENAT: ct_event_cb(): kill expired mapping at ext port %d\n", mapping->port);
-  kill_mapping(mapping);
+  (mapping->refer_count)--;
+  pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+  if (mapping->refer_count <= 0) {
+    pr_debug("xt_FULLCONENAT: ct_event_cb(): kill expired mapping at ext port %d\n", mapping->port);
+    kill_mapping(mapping);
+  }
 
   spin_unlock(&fullconenat_lock);
 
@@ -390,7 +411,14 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       newrange.min_proto.udp.port = cpu_to_be16(mapping->int_port);
       newrange.max_proto = newrange.min_proto;
 
+      pr_debug("xt_FULLCONENAT: inbound NAT %s ==> %pI4:%d\n", nf_ct_stringify_tuple(ct_tuple), &mapping->int_addr, mapping->int_port);
+
       ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
+
+      if (ret == NF_ACCEPT) {
+        (mapping->refer_count)++;
+        pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+      }
     }
     spin_unlock(&fullconenat_lock);
     return ret;
@@ -445,8 +473,18 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
-    /* save the mapping information into our mapping table */
-    mapping = allocate_mapping(net, port, ip, original_port, ifindex, ct_tuple_origin);
+    pr_debug("xt_FULLCONENAT: outbound NAT %s ==> %d\n", nf_ct_stringify_tuple(ct_tuple_origin), port);
+
+    /* save the mapping information into our mapping table
+    * ONLY when no previous mapping with same CONE info exists. */
+    mapping = get_mapping_by_ext_port(port, ifindex);
+    if (mapping == NULL || !check_mapping(net, zone, mapping)) {
+      mapping = allocate_mapping(net, port, ip, original_port, ifindex, ct_tuple_origin);
+    }
+    if (mapping != NULL) {
+      mapping->refer_count++;
+      pr_debug("xt_FULLCONENAT: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+    }
 
     spin_unlock(&fullconenat_lock);
     return ret;

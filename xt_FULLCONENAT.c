@@ -219,6 +219,9 @@ static int check_mapping(struct nat_mapping* mapping) {
     return 0;
   }
 
+  /* for dying/unconfirmed conntrack tuples, an IPCT_DESTROY event may NOT be fired.
+   * so we manually kill one of those tuples once we acquire one. */
+
   list_for_each_safe(iter, tmp, &mapping->original_tuples) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
@@ -227,7 +230,7 @@ static int check_mapping(struct nat_mapping* mapping) {
       original_tuple_item->zone, &original_tuple_item->tuple) == NULL) {
       atomic_set(&mapping_check_busy, 0);
 
-      pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s expired. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
+      pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s dying/unconfirmed. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
 
       list_del(&original_tuple_item->node);
       kfree(original_tuple_item);
@@ -236,8 +239,6 @@ static int check_mapping(struct nat_mapping* mapping) {
     atomic_set(&mapping_check_busy, 0);
   }
 
-  /* for dying/unconfirmed conntracks, an IPCT_DESTROY event may NOT be fired.
-   * so we manually kill one of those conntracks once we acquire one. */
   pr_debug("xt_FULLCONENAT: check_mapping() refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
   if (mapping->refer_count <= 0) {
     pr_debug("xt_FULLCONENAT: check_mapping(): kill dying/unconfirmed mapping at ext port %d\n", mapping->port);

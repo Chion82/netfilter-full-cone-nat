@@ -42,8 +42,6 @@ static inline unsigned int xt_hooknum(const struct xt_action_param *par) {
 
 struct nat_mapping_original_tuple {
   struct nf_conntrack_tuple tuple;
-  struct net *net;
-  struct nf_conntrack_zone *zone;
 
   struct list_head node;
 };
@@ -63,16 +61,8 @@ struct nat_mapping {
 
 };
 
-struct nf_ct_net_event {
-  struct net *net;
-  u8 family;
-  struct nf_ct_event_notifier ct_event_notifier;
-  int refer_count;
-
-  struct list_head node;
-};
-
-static LIST_HEAD(nf_ct_net_event_list);
+struct nf_ct_event_notifier ct_event_notifier;
+int tg_refer_count = 0;
 
 static DEFINE_MUTEX(nf_ct_net_event_lock);
 
@@ -120,15 +110,13 @@ static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_
   return p_new;
 }
 
-static void add_original_tuple_to_mapping(struct nat_mapping *mapping, const struct nf_conntrack_tuple* original_tuple, struct net *net, struct nf_conntrack_zone *zone) {
+static void add_original_tuple_to_mapping(struct nat_mapping *mapping, const struct nf_conntrack_tuple* original_tuple) {
   struct nat_mapping_original_tuple *item = kmalloc(sizeof(struct nat_mapping_original_tuple), GFP_ATOMIC);
   if (item == NULL) {
     pr_debug("xt_FULLCONENAT: ERROR: kmalloc() for nat_mapping_original_tuple failed.\n");
     return;
   }
   memcpy(&item->tuple, original_tuple, sizeof(struct nf_conntrack_tuple));
-  item->net = net;
-  item->zone = zone;
   list_add(&item->node, &mapping->original_tuples);
   (mapping->refer_count)++;
 }
@@ -207,7 +195,7 @@ static void destroy_mappings(void) {
 /* check if a mapping is valid.
  * possibly delete and free an invalid mapping.
  * the mapping should not be used anymore after check_mapping() returns 0. */
-static int check_mapping(struct nat_mapping* mapping) {
+static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf_conntrack_zone *zone) {
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
 
@@ -226,8 +214,7 @@ static int check_mapping(struct nat_mapping* mapping) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
     atomic_set(&mapping_check_busy, 1);
-    if (nf_conntrack_find_get(original_tuple_item->net, 
-      original_tuple_item->zone, &original_tuple_item->tuple) == NULL) {
+    if (nf_conntrack_find_get(net, zone, &original_tuple_item->tuple) == NULL) {
       atomic_set(&mapping_check_busy, 0);
 
       pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s dying/unconfirmed. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
@@ -373,7 +360,7 @@ static uint16_t find_appropriate_port(struct net *net, struct nf_conntrack_zone 
       || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
       /* 1. try to preserve the port if it's available */
       mapping = get_mapping_by_ext_port(original_port, ifindex);
-      if (mapping == NULL || !(check_mapping(mapping))) {
+      if (mapping == NULL || !(check_mapping(mapping, net, zone))) {
         return original_port;
       }
     }
@@ -386,7 +373,7 @@ static uint16_t find_appropriate_port(struct net *net, struct nf_conntrack_zone 
     /* 2. try to find an available port */
     selected = min + ((start + i) % range_size);
     mapping = get_mapping_by_ext_port(selected, ifindex);
-    if (mapping == NULL || !(check_mapping(mapping))) {
+    if (mapping == NULL || !(check_mapping(mapping, net, zone))) {
       return selected;
     }
   }
@@ -458,7 +445,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       spin_unlock(&fullconenat_lock);
       return ret;
     }
-    if (check_mapping(mapping)) {
+    if (check_mapping(mapping, net, zone)) {
       newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
       newrange.min_addr.ip = mapping->int_addr;
       newrange.max_addr.ip = mapping->int_addr;
@@ -470,7 +457,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
       if (ret == NF_ACCEPT) {
-        add_original_tuple_to_mapping(mapping, ct_tuple_origin, net, zone);
+        add_original_tuple_to_mapping(mapping, ct_tuple_origin);
         pr_debug("xt_FULLCONENAT: fullconenat_tg(): INBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
       }
     }
@@ -492,7 +479,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
 
       src_mapping = get_mapping_by_original_src(ip, original_port, ifindex);
-      if (src_mapping != NULL && check_mapping(src_mapping)) {
+      if (src_mapping != NULL && check_mapping(src_mapping, net, zone)) {
 
         /* outbound nat: if a previously established mapping is active,
          * we will reuse that mapping. */
@@ -531,11 +518,11 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
     /* save the mapping information into our mapping table */
     mapping = get_mapping_by_ext_port(port, ifindex);
-    if (mapping == NULL || !check_mapping(mapping)) {
+    if (mapping == NULL || !check_mapping(mapping, net, zone)) {
       mapping = allocate_mapping(net, port, ip, original_port, ifindex);
     }
     if (mapping != NULL) {
-      add_original_tuple_to_mapping(mapping, ct_tuple_origin, net, zone);
+      add_original_tuple_to_mapping(mapping, ct_tuple_origin);
       pr_debug("xt_FULLCONENAT: fullconenat_tg(): OUTBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
     }
 
@@ -548,40 +535,20 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
 static int fullconenat_tg_check(const struct xt_tgchk_param *par)
 {
-  struct nf_ct_net_event *net_event;
-  struct list_head* iter;
-
-  struct net *net = par->net;
-
   mutex_lock(&nf_ct_net_event_lock);
 
-  list_for_each(iter, &nf_ct_net_event_list) {
-    net_event = list_entry(iter, struct nf_ct_net_event, node);
-    if (net_event->net == net) {
-      (net_event->refer_count)++;
-      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
-      goto out;
-    }
+  tg_refer_count++;
+
+  pr_debug("xt_FULLCONENAT: fullconenat_tg_check(): tg_refer_count is now %d\n", tg_refer_count);
+
+  if (tg_refer_count == 1) {
+    nf_ct_netns_get(par->net, par->family);
+    ct_event_notifier.fcn = ct_event_cb;
+    nf_conntrack_register_notifier(par->net, &ct_event_notifier);
+
+    pr_debug("xt_FULLCONENAT: fullconenat_tg_check(): ct_event_notifier registered\n");
   }
 
-  net_event = kmalloc(sizeof(struct nf_ct_net_event), GFP_KERNEL);
-  if (net_event == NULL) {
-    pr_debug("xt_FULLCONENAT: ERROR: kmalloc() for net_event failed.\n");
-    goto out;
-  }
-  net_event->net = net;
-  net_event->family = par->family;
-  (net_event->ct_event_notifier).fcn = ct_event_cb;
-  net_event->refer_count = 1;
-  list_add(&net_event->node, &nf_ct_net_event_list);
-
-  nf_ct_netns_get(net_event->net, net_event->family);
-  nf_conntrack_register_notifier(net_event->net, &(net_event->ct_event_notifier));
-
-  pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
-  pr_debug("xt_FULLCONENAT: ct_event_notifier registered for net addr %p\n", (void*) (net_event->net));
-
-out:
   mutex_unlock(&nf_ct_net_event_lock);
 
   return 0;
@@ -589,28 +556,17 @@ out:
 
 static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
 {
-  struct nf_ct_net_event *net_event;
-  struct list_head *iter, *tmp_iter;
-
-  struct net *net = par->net;
-
   mutex_lock(&nf_ct_net_event_lock);
 
-  list_for_each_safe(iter, tmp_iter, &nf_ct_net_event_list) {
-    net_event = list_entry(iter, struct nf_ct_net_event, node);
-    if (net_event->net == net) {
-      (net_event->refer_count)--;
-      pr_debug("xt_FULLCONENAT: refer_count for net addr %p is now %d\n", (void*) (net_event->net), net_event->refer_count);
+  tg_refer_count--;
 
-      if (net_event->refer_count <= 0) {
-        nf_conntrack_unregister_notifier(net_event->net, &(net_event->ct_event_notifier));
-        nf_ct_netns_put(net_event->net, net_event->family);
+  pr_debug("xt_FULLCONENAT: fullconenat_tg_destroy(): tg_refer_count is now %d\n", tg_refer_count);
 
-        pr_debug("xt_FULLCONENAT: unregistered ct_net_event for net addr %p\n", (void*) (net_event->net));
-        list_del(&net_event->node);
-        kfree(net_event);
-      }
-    }
+  if (tg_refer_count == 0) {
+    nf_conntrack_unregister_notifier(par->net, &ct_event_notifier);
+    nf_ct_netns_put(par->net, par->family);
+
+    pr_debug("xt_FULLCONENAT: fullconenat_tg_destroy(): ct_event_notifier unregistered\n");
   }
 
   mutex_unlock(&nf_ct_net_event_lock);

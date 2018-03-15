@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2018 Chion Tang <tech@chionlab.moe>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/version.h>
@@ -9,7 +17,6 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter/x_tables.h>
-#include <net/netns/hash.h>
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_tuple.h>
@@ -48,9 +55,11 @@ struct nat_mapping_original_tuple {
 
 struct nat_mapping {
   uint16_t port;     /* external UDP port */
+  int ifindex;       /* external interface index*/
+
   __be32 int_addr;   /* internal source ip address */
   uint16_t int_port; /* internal source port */
-  int ifindex;       /* external interface index*/
+
   int refer_count;   /* how many references linked to this mapping
                       * aka. length of original_tuples */
 
@@ -75,6 +84,7 @@ static DEFINE_SPINLOCK(fullconenat_lock);
 static atomic_t mapping_check_busy;
 
 static char tuple_tmp_string[512];
+/* non-atomic: can only be called serially within lock zones. */
 static char* nf_ct_stringify_tuple(const struct nf_conntrack_tuple *t) {
   snprintf(tuple_tmp_string, sizeof(tuple_tmp_string), "%pI4:%hu -> %pI4:%hu",
          &t->src.u3.ip, be16_to_cpu(t->src.u.all),
@@ -133,7 +143,7 @@ static struct nat_mapping* get_mapping_by_ext_port(const uint16_t port, const in
   return NULL;
 }
 
-static struct nat_mapping* get_mapping_by_original_src(const __be32 src_ip, const uint16_t src_port, const int ifindex) {
+static struct nat_mapping* get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const int ifindex) {
   struct nat_mapping *p_current;
   u32 hash_src = HASH_2(src_ip, (u32)src_port);
 
@@ -146,7 +156,7 @@ static struct nat_mapping* get_mapping_by_original_src(const __be32 src_ip, cons
   return NULL;
 }
 
-static struct nat_mapping* get_mapping_by_original_src_no_ifindex(const __be32 src_ip, const uint16_t src_port) {
+static struct nat_mapping* get_mapping_by_int_src_no_ifindex(const __be32 src_ip, const uint16_t src_port) {
   struct nat_mapping *p_current;
   u32 hash_src = HASH_2(src_ip, (u32)src_port);
 
@@ -198,6 +208,7 @@ static void destroy_mappings(void) {
 static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf_conntrack_zone *zone) {
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
+  struct nf_conntrack_tuple_hash *tuple_hash;
 
   if (mapping == NULL) {
     return 0;
@@ -213,19 +224,21 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf
   list_for_each_safe(iter, tmp, &mapping->original_tuples) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
+    /* tell ct_event_cb() to skip checking at this time */
     atomic_set(&mapping_check_busy, 1);
-    if (nf_conntrack_find_get(net, zone, &original_tuple_item->tuple) == NULL) {
-      atomic_set(&mapping_check_busy, 0);
+    tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
+    atomic_set(&mapping_check_busy, 0);
 
+    if (tuple_hash == NULL) {
       pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s dying/unconfirmed. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
 
       list_del(&original_tuple_item->node);
       kfree(original_tuple_item);
       (mapping->refer_count)--;
     }
-    atomic_set(&mapping_check_busy, 0);
   }
 
+  /* kill the mapping if need */
   pr_debug("xt_FULLCONENAT: check_mapping() refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
   if (mapping->refer_count <= 0) {
     pr_debug("xt_FULLCONENAT: check_mapping(): kill dying/unconfirmed mapping at ext port %d\n", mapping->port);
@@ -278,12 +291,12 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   /* we dont know the conntrack direction for now so we try in both ways. */
   ip = (ct_tuple->src).u3.ip;
   port = be16_to_cpu((ct_tuple->src).u.udp.port);
-  mapping = get_mapping_by_original_src_no_ifindex(ip, port);
+  mapping = get_mapping_by_int_src_no_ifindex(ip, port);
   if (mapping == NULL) {
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
     ip = (ct_tuple->src).u3.ip;
     port = be16_to_cpu((ct_tuple->src).u.udp.port);
-    mapping = get_mapping_by_original_src_no_ifindex(ip, port);
+    mapping = get_mapping_by_int_src_no_ifindex(ip, port);
     if (mapping != NULL) {
       pr_debug("xt_FULLCONENAT: ct_event_cb(): IPCT_DESTROY event for INBOUND conntrack at ext port %d\n", mapping->port);
     }
@@ -295,6 +308,7 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     goto out;
   }
 
+  /* look for the corresponding out-dated tuple and free it */
   list_for_each_safe(iter, tmp, &mapping->original_tuples) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
@@ -306,7 +320,7 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     }
   }
 
-  /* then kill it if needed*/
+  /* then kill the mapping if needed*/
   pr_debug("xt_FULLCONENAT: ct_event_cb(): refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
   if (mapping->refer_count <= 0) {
     pr_debug("xt_FULLCONENAT: ct_event_cb(): kill expired mapping at ext port %d\n", mapping->port);
@@ -452,7 +466,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       newrange.min_proto.udp.port = cpu_to_be16(mapping->int_port);
       newrange.max_proto = newrange.min_proto;
 
-      pr_debug("xt_FULLCONENAT: inbound NAT %s ==> %pI4:%d\n", nf_ct_stringify_tuple(ct_tuple_origin), &mapping->int_addr, mapping->int_port);
+      pr_debug("xt_FULLCONENAT: <INBOUND DNAT> %s ==> %pI4:%d\n", nf_ct_stringify_tuple(ct_tuple_origin), &mapping->int_addr, mapping->int_port);
 
       ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
@@ -478,7 +492,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       ip = (ct_tuple_origin->src).u3.ip;
       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
 
-      src_mapping = get_mapping_by_original_src(ip, original_port, ifindex);
+      src_mapping = get_mapping_by_int_src(ip, original_port, ifindex);
       if (src_mapping != NULL && check_mapping(src_mapping, net, zone)) {
 
         /* outbound nat: if a previously established mapping is active,
@@ -489,6 +503,10 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
         newrange.max_proto = newrange.min_proto;
 
       } else {
+
+        /* if not, we find a new external port to map to.
+         * the SNAT may fail so we should re-check the mapped port later. */
+
         want_port = find_appropriate_port(net, zone, original_port, ifindex, range);
 
         newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
@@ -502,19 +520,21 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     newrange.min_addr.ip = new_ip;
     newrange.max_addr.ip = new_ip;
 
+    /* do SNAT now */
     ret = nf_nat_setup_info(ct, &newrange, HOOK2MANIP(xt_hooknum(par)));
 
     if (protonum != IPPROTO_UDP || ret != NF_ACCEPT) {
+      /* for non-UDP packets and failed SNAT, bailout */
       spin_unlock(&fullconenat_lock);
       return ret;
     }
 
     /* the reply tuple contains the mapped port. */
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
-
+    /* this is the resulted mapped port. */
     port = be16_to_cpu((ct_tuple->dst).u.udp.port);
 
-    pr_debug("xt_FULLCONENAT: outbound NAT %s ==> %d\n", nf_ct_stringify_tuple(ct_tuple_origin), port);
+    pr_debug("xt_FULLCONENAT: <OUTBOUND SNAT> %s ==> %d\n", nf_ct_stringify_tuple(ct_tuple_origin), port);
 
     /* save the mapping information into our mapping table */
     mapping = get_mapping_by_ext_port(port, ifindex);

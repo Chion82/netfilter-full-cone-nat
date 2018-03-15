@@ -12,7 +12,6 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/hashtable.h>
-#include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
@@ -92,7 +91,7 @@ static char* nf_ct_stringify_tuple(const struct nf_conntrack_tuple *t) {
   return tuple_tmp_string;
 }
 
-static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_t port, const __be32 int_addr, const uint16_t int_port, const int ifindex) {
+static struct nat_mapping* allocate_mapping(const uint16_t port, const __be32 int_addr, const uint16_t int_port, const int ifindex) {
   struct nat_mapping *p_new;
   u32 hash_src;
 
@@ -192,7 +191,7 @@ static void destroy_mappings(void) {
 /* check if a mapping is valid.
  * possibly delete and free an invalid mapping.
  * the mapping should not be used anymore after check_mapping() returns 0. */
-static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf_conntrack_zone *zone) {
+static int check_mapping(struct nat_mapping* mapping, struct net *net, const struct nf_conntrack_zone *zone) {
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
   struct nf_conntrack_tuple_hash *tuple_hash;
@@ -239,7 +238,6 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf
 /* conntrack destroy event callback function */
 static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   struct nf_conn *ct;
-  struct net *net;
   struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
   struct nat_mapping *mapping;
   uint8_t protonum;
@@ -254,8 +252,6 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   if (ct == NULL || !(events & (1 << IPCT_DESTROY))) {
     return 0;
   }
-
-  net = nf_ct_net(ct);
 
   ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
 
@@ -336,7 +332,7 @@ static __be32 get_device_ip(const struct net_device* dev) {
   }
 }
 
-static uint16_t find_appropriate_port(struct net *net, struct nf_conntrack_zone *zone, const uint16_t original_port, const int ifindex, const struct nf_nat_ipv4_range *range) {
+static uint16_t find_appropriate_port(struct net *net, const struct nf_conntrack_zone *zone, const uint16_t original_port, const int ifindex, const struct nf_nat_ipv4_range *range) {
   uint16_t min, start, selected, range_size, i;
   struct nat_mapping* mapping = NULL;
 
@@ -392,11 +388,11 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   const struct nf_nat_ipv4_multi_range_compat *mr;
   const struct nf_nat_ipv4_range *range;
 
+  const struct nf_conntrack_zone *zone;
+  struct net *net;
   struct nf_conn *ct;
   enum ip_conntrack_info ctinfo;
   struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
-  struct net *net;
-  struct nf_conntrack_zone *zone;
 
   struct nat_mapping *mapping, *src_mapping;
   unsigned int ret;
@@ -527,7 +523,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     /* save the mapping information into our mapping table */
     mapping = get_mapping_by_ext_port(port, ifindex);
     if (mapping == NULL || !check_mapping(mapping, net, zone)) {
-      mapping = allocate_mapping(net, port, ip, original_port, ifindex);
+      mapping = allocate_mapping(port, ip, original_port, ifindex);
     }
     if (mapping != NULL) {
       add_original_tuple_to_mapping(mapping, ct_tuple_origin);

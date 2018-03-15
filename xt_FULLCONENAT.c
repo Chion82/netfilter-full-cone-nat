@@ -61,12 +61,12 @@ struct nat_mapping {
   uint16_t int_port; /* internal source port */
 
   int refer_count;   /* how many references linked to this mapping
-                      * aka. length of original_tuples */
+                      * aka. length of original_tuple_list */
 
-  struct list_head original_tuples;
+  struct list_head original_tuple_list;
 
   struct hlist_node node_by_ext_port;
-  struct hlist_node node_by_original_src;
+  struct hlist_node node_by_int_src;
 
 };
 
@@ -76,7 +76,7 @@ int tg_refer_count = 0;
 static DEFINE_MUTEX(nf_ct_net_event_lock);
 
 static DEFINE_HASHTABLE(mapping_table_by_ext_port, HASHTABLE_BUCKET_BITS);
-static DEFINE_HASHTABLE(mapping_table_by_original_src, HASHTABLE_BUCKET_BITS);
+static DEFINE_HASHTABLE(mapping_table_by_int_src, HASHTABLE_BUCKET_BITS);
 
 static DEFINE_SPINLOCK(fullconenat_lock);
 
@@ -106,13 +106,13 @@ static struct nat_mapping* allocate_mapping(const struct net *net, const uint16_
   p_new->int_port = int_port;
   p_new->ifindex = ifindex;
   p_new->refer_count = 0;
-  (p_new->original_tuples).next = &(p_new->original_tuples);
-  (p_new->original_tuples).prev = &(p_new->original_tuples);
+  (p_new->original_tuple_list).next = &(p_new->original_tuple_list);
+  (p_new->original_tuple_list).prev = &(p_new->original_tuple_list);
 
   hash_src = HASH_2(int_addr, (u32)int_port);
 
   hash_add(mapping_table_by_ext_port, &p_new->node_by_ext_port, port);
-  hash_add(mapping_table_by_original_src, &p_new->node_by_original_src, hash_src);
+  hash_add(mapping_table_by_int_src, &p_new->node_by_int_src, hash_src);
 
   pr_debug("xt_FULLCONENAT: new mapping allocated for %pI4:%d ==> %d\n", 
     &p_new->int_addr, p_new->int_port, p_new->port);
@@ -127,7 +127,7 @@ static void add_original_tuple_to_mapping(struct nat_mapping *mapping, const str
     return;
   }
   memcpy(&item->tuple, original_tuple, sizeof(struct nf_conntrack_tuple));
-  list_add(&item->node, &mapping->original_tuples);
+  list_add(&item->node, &mapping->original_tuple_list);
   (mapping->refer_count)++;
 }
 
@@ -147,7 +147,7 @@ static struct nat_mapping* get_mapping_by_int_src(const __be32 src_ip, const uin
   struct nat_mapping *p_current;
   u32 hash_src = HASH_2(src_ip, (u32)src_port);
 
-  hash_for_each_possible(mapping_table_by_original_src, p_current, node_by_original_src, hash_src) {
+  hash_for_each_possible(mapping_table_by_int_src, p_current, node_by_int_src, hash_src) {
     if (p_current->int_addr == src_ip && p_current->int_port == src_port) {
       return p_current;
     }
@@ -164,14 +164,14 @@ static void kill_mapping(struct nat_mapping *mapping) {
     return;
   }
 
-  list_for_each_safe(iter, tmp, &mapping->original_tuples) {
+  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
     list_del(&original_tuple_item->node);
     kfree(original_tuple_item);
   }
 
   hash_del(&mapping->node_by_ext_port);
-  hash_del(&mapping->node_by_original_src);
+  hash_del(&mapping->node_by_int_src);
   kfree(mapping);
 }
 
@@ -208,7 +208,7 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, struct nf
   /* for dying/unconfirmed conntrack tuples, an IPCT_DESTROY event may NOT be fired.
    * so we manually kill one of those tuples once we acquire one. */
 
-  list_for_each_safe(iter, tmp, &mapping->original_tuples) {
+  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
     /* tell ct_event_cb() to skip checking at this time */
@@ -296,7 +296,7 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   }
 
   /* look for the corresponding out-dated tuple and free it */
-  list_for_each_safe(iter, tmp, &mapping->original_tuples) {
+  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
     if (nf_ct_tuple_equal(&original_tuple_item->tuple, ct_tuple_origin)) {

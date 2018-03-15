@@ -143,20 +143,7 @@ static struct nat_mapping* get_mapping_by_ext_port(const uint16_t port, const in
   return NULL;
 }
 
-static struct nat_mapping* get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const int ifindex) {
-  struct nat_mapping *p_current;
-  u32 hash_src = HASH_2(src_ip, (u32)src_port);
-
-  hash_for_each_possible(mapping_table_by_original_src, p_current, node_by_original_src, hash_src) {
-    if (p_current->int_addr == src_ip && p_current->int_port == src_port && p_current->ifindex == ifindex) {
-      return p_current;
-    }
-  }
-
-  return NULL;
-}
-
-static struct nat_mapping* get_mapping_by_int_src_no_ifindex(const __be32 src_ip, const uint16_t src_port) {
+static struct nat_mapping* get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port) {
   struct nat_mapping *p_current;
   u32 hash_src = HASH_2(src_ip, (u32)src_port);
 
@@ -291,12 +278,12 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   /* we dont know the conntrack direction for now so we try in both ways. */
   ip = (ct_tuple->src).u3.ip;
   port = be16_to_cpu((ct_tuple->src).u.udp.port);
-  mapping = get_mapping_by_int_src_no_ifindex(ip, port);
+  mapping = get_mapping_by_int_src(ip, port);
   if (mapping == NULL) {
     ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
     ip = (ct_tuple->src).u3.ip;
     port = be16_to_cpu((ct_tuple->src).u.udp.port);
-    mapping = get_mapping_by_int_src_no_ifindex(ip, port);
+    mapping = get_mapping_by_int_src(ip, port);
     if (mapping != NULL) {
       pr_debug("xt_FULLCONENAT: ct_event_cb(): IPCT_DESTROY event for INBOUND conntrack at ext port %d\n", mapping->port);
     }
@@ -442,6 +429,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   if (xt_hooknum(par) == NF_INET_PRE_ROUTING) {
     /* inbound packets */
     ifindex = xt_in(par)->ifindex;
+
     ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
 
     protonum = (ct_tuple_origin->dst).protonum;
@@ -492,7 +480,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       ip = (ct_tuple_origin->src).u3.ip;
       original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
 
-      src_mapping = get_mapping_by_int_src(ip, original_port, ifindex);
+      src_mapping = get_mapping_by_int_src(ip, original_port);
       if (src_mapping != NULL && check_mapping(src_mapping, net, zone)) {
 
         /* outbound nat: if a previously established mapping is active,

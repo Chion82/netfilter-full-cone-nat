@@ -14,7 +14,7 @@ Prerequisites:
 * kernel source  
 * iptables source (git://git.netfilter.org/iptables.git) 
 
-Replace `xt_FULLCONENAT.c` with `xt_FULLCONENAT-old-kernel.c` if your kernel version is somehow below 4.1x and have issue compiling the module source.
+Confirm the kernel configuration option `CONFIG_NF_CONNTRACK_EVENTS` is enabled. If this option is disabled on your system, enable it and rebuild your netfilter modules.
 
 Kernel Module (as standalone module)
 -------------

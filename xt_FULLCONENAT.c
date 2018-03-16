@@ -92,7 +92,7 @@ static char* nf_ct_stringify_tuple(const struct nf_conntrack_tuple *t) {
   return tuple_tmp_string;
 }
 
-static struct nat_mapping* allocate_mapping(const uint16_t port, const __be32 int_addr, const uint16_t int_port, const int ifindex) {
+static struct nat_mapping* allocate_mapping(const __be32 int_addr, const uint16_t int_port, const uint16_t port, const int ifindex) {
   struct nat_mapping *p_new;
   u32 hash_src;
 
@@ -406,6 +406,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
   ip = 0;
   original_port = 0;
+  src_mapping = NULL;
 
   mr = par->targinfo;
   range = &mr->range[0];
@@ -491,12 +492,13 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
         /* if not, we find a new external port to map to.
          * the SNAT may fail so we should re-check the mapped port later. */
-
         want_port = find_appropriate_port(net, zone, original_port, ifindex, range);
 
         newrange.flags = NF_NAT_RANGE_MAP_IPS | NF_NAT_RANGE_PROTO_SPECIFIED;
         newrange.min_proto.udp.port = cpu_to_be16(want_port);
         newrange.max_proto = newrange.min_proto;
+
+        src_mapping = NULL;
 
       }
     }
@@ -522,9 +524,9 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     pr_debug("xt_FULLCONENAT: <OUTBOUND SNAT> %s ==> %d\n", nf_ct_stringify_tuple(ct_tuple_origin), port);
 
     /* save the mapping information into our mapping table */
-    mapping = get_mapping_by_ext_port(port, ifindex);
+    mapping = src_mapping;
     if (mapping == NULL || !check_mapping(mapping, net, zone)) {
-      mapping = allocate_mapping(port, ip, original_port, ifindex);
+      mapping = allocate_mapping(ip, original_port, port, ifindex);
     }
     if (mapping != NULL) {
       add_original_tuple_to_mapping(mapping, ct_tuple_origin);

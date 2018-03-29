@@ -72,6 +72,7 @@ struct nat_mapping {
 
 struct nf_ct_event_notifier ct_event_notifier;
 int tg_refer_count = 0;
+int ct_event_notifier_registered = 0;
 
 static DEFINE_MUTEX(nf_ct_net_event_lock);
 
@@ -551,9 +552,14 @@ static int fullconenat_tg_check(const struct xt_tgchk_param *par)
   if (tg_refer_count == 1) {
     nf_ct_netns_get(par->net, par->family);
     ct_event_notifier.fcn = ct_event_cb;
-    nf_conntrack_register_notifier(par->net, &ct_event_notifier);
 
-    pr_debug("xt_FULLCONENAT: fullconenat_tg_check(): ct_event_notifier registered\n");
+    if (nf_conntrack_register_notifier(par->net, &ct_event_notifier) == 0) {
+      ct_event_notifier_registered = 1;
+      pr_debug("xt_FULLCONENAT: fullconenat_tg_check(): ct_event_notifier registered\n");
+    } else {
+      printk("xt_FULLCONENAT: warning: failed to register a conntrack notifier. Disable active GC for mappings.\n");
+    }
+
   }
 
   mutex_unlock(&nf_ct_net_event_lock);
@@ -570,10 +576,14 @@ static void fullconenat_tg_destroy(const struct xt_tgdtor_param *par)
   pr_debug("xt_FULLCONENAT: fullconenat_tg_destroy(): tg_refer_count is now %d\n", tg_refer_count);
 
   if (tg_refer_count == 0) {
-    nf_conntrack_unregister_notifier(par->net, &ct_event_notifier);
-    nf_ct_netns_put(par->net, par->family);
+    if (ct_event_notifier_registered) {
+      nf_conntrack_unregister_notifier(par->net, &ct_event_notifier);
+      ct_event_notifier_registered = 0;
 
-    pr_debug("xt_FULLCONENAT: fullconenat_tg_destroy(): ct_event_notifier unregistered\n");
+      pr_debug("xt_FULLCONENAT: fullconenat_tg_destroy(): ct_event_notifier unregistered\n");
+
+    }
+    nf_ct_netns_put(par->net, par->family);
   }
 
   mutex_unlock(&nf_ct_net_event_lock);

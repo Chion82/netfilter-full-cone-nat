@@ -12,6 +12,7 @@
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/hashtable.h>
+#include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
@@ -326,15 +327,21 @@ out:
 static __be32 get_device_ip(const struct net_device* dev) {
   struct in_device* in_dev;
   struct in_ifaddr* if_info;
+  __be32 result;
 
+  rcu_read_lock();
   in_dev = dev->ip_ptr;
   if (in_dev == NULL) {
+    rcu_read_unlock();
     return 0;
   }
   if_info = in_dev->ifa_list;
   if (if_info) {
-    return if_info->ifa_local;
+    result = if_info->ifa_local;
+    rcu_read_unlock();
+    return result;
   } else {
+    rcu_read_unlock();
     return 0;
   }
 }
@@ -401,6 +408,8 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   enum ip_conntrack_info ctinfo;
   struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
 
+  struct net_device *net_dev;
+
   struct nat_mapping *mapping, *src_mapping;
   unsigned int ret;
   struct nf_nat_range newrange;
@@ -440,8 +449,14 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     if (protonum != IPPROTO_UDP) {
       return ret;
     }
-    ip = (ct_tuple_origin->src).u3.ip;
+    ip = (ct_tuple_origin->dst).u3.ip;
     port = be16_to_cpu((ct_tuple_origin->dst).u.udp.port);
+
+    net_dev = ip_dev_find(net, ip);
+    if (net_dev != NULL) {
+      ifindex = net_dev->ifindex;
+      dev_put(net_dev);
+    }
 
     spin_lock(&fullconenat_lock);
 

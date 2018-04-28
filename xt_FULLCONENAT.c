@@ -197,6 +197,7 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
   struct nf_conntrack_tuple_hash *tuple_hash;
+  struct nf_conn *ct;
 
   if (mapping == NULL) {
     return 0;
@@ -223,6 +224,10 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
       list_del(&original_tuple_item->node);
       kfree(original_tuple_item);
       (mapping->refer_count)--;
+    } else {
+      ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
+      if (ct != NULL)
+        nf_ct_put(ct);
     }
   }
 

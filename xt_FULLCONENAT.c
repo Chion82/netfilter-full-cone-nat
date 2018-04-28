@@ -452,6 +452,8 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     ip = (ct_tuple_origin->dst).u3.ip;
     port = be16_to_cpu((ct_tuple_origin->dst).u.udp.port);
 
+    /* get the corresponding ifindex by the dst_ip (aka. external ip of this host),
+     * in case the packet needs to be forwarded from another inbound interface. */
     net_dev = ip_dev_find(net, ip);
     if (net_dev != NULL) {
       ifindex = net_dev->ifindex;

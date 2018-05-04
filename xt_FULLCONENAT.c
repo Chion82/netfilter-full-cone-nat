@@ -182,13 +182,13 @@ static void destroy_mappings(void) {
   struct hlist_node *tmp;
   int i;
 
-  spin_lock(&fullconenat_lock);
+  spin_lock_bh(&fullconenat_lock);
 
   hash_for_each_safe(mapping_table_by_ext_port, i, tmp, p_current, node_by_ext_port) {
     kill_mapping(p_current);
   }
 
-  spin_unlock(&fullconenat_lock);
+  spin_unlock_bh(&fullconenat_lock);
 }
 
 /* check if a mapping is valid.
@@ -277,7 +277,10 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     return 0;
   }
 
-  spin_lock(&fullconenat_lock);
+  if (!spin_trylock(&fullconenat_lock)) {
+    pr_debug("xt_FULLCONENAT: ct_event_cb(): [==================================WARNING================================] spin lock busy, handler skipped.\n");
+    return -EBUSY;
+  }
 
   /* we dont know the conntrack direction for now so we try in both ways. */
   ip = (ct_tuple->src).u3.ip;
@@ -460,12 +463,12 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       dev_put(net_dev);
     }
 
-    spin_lock(&fullconenat_lock);
+    spin_lock_bh(&fullconenat_lock);
 
     /* find an active mapping based on the inbound port */
     mapping = get_mapping_by_ext_port(port, ifindex);
     if (mapping == NULL) {
-      spin_unlock(&fullconenat_lock);
+      spin_unlock_bh(&fullconenat_lock);
       return ret;
     }
     if (check_mapping(mapping, net, zone)) {
@@ -484,7 +487,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
         pr_debug("xt_FULLCONENAT: fullconenat_tg(): INBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
       }
     }
-    spin_unlock(&fullconenat_lock);
+    spin_unlock_bh(&fullconenat_lock);
     return ret;
 
 
@@ -495,7 +498,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
     protonum = (ct_tuple_origin->dst).protonum;
 
-    spin_lock(&fullconenat_lock);
+    spin_lock_bh(&fullconenat_lock);
 
     if (protonum == IPPROTO_UDP) {
       ip = (ct_tuple_origin->src).u3.ip;
@@ -535,7 +538,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
     if (protonum != IPPROTO_UDP || ret != NF_ACCEPT) {
       /* for non-UDP packets and failed SNAT, bailout */
-      spin_unlock(&fullconenat_lock);
+      spin_unlock_bh(&fullconenat_lock);
       return ret;
     }
 
@@ -556,7 +559,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
       pr_debug("xt_FULLCONENAT: fullconenat_tg(): OUTBOUND: refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
     }
 
-    spin_unlock(&fullconenat_lock);
+    spin_unlock_bh(&fullconenat_lock);
     return ret;
   }
 
@@ -629,6 +632,8 @@ static struct xt_target tg_reg[] __read_mostly = {
 
 static int __init fullconenat_tg_init(void)
 {
+  atomic_set(&mapping_check_busy, 0);
+
   return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
 

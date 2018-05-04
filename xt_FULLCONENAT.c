@@ -226,9 +226,11 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
       kfree(original_tuple_item);
       (mapping->refer_count)--;
     } else {
+      atomic_set(&mapping_check_busy, 1);
       ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
       if (ct != NULL)
         nf_ct_put(ct);
+      atomic_set(&mapping_check_busy, 0);
     }
   }
 
@@ -255,6 +257,8 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
 
+  unsigned long irq_flags;
+
   ct = item->ct;
   /* we handle only conntrack destroy events */
   if (ct == NULL || !(events & (1 << IPCT_DESTROY))) {
@@ -277,8 +281,16 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     return 0;
   }
 
+  local_irq_save(irq_flags);
+  local_irq_disable();
+  preempt_disable();
+
   if (!spin_trylock(&fullconenat_lock)) {
     pr_debug("xt_FULLCONENAT: ct_event_cb(): [==================================WARNING================================] spin lock busy, handler skipped.\n");
+
+    local_irq_restore(irq_flags);
+    preempt_enable();
+
     return -EAGAIN;
   }
 
@@ -323,6 +335,9 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
 
 out:
   spin_unlock(&fullconenat_lock);
+
+  local_irq_restore(irq_flags);
+  preempt_enable();
 
   return 0;
 }

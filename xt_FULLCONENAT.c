@@ -279,7 +279,7 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
 
   if (!spin_trylock(&fullconenat_lock)) {
     pr_debug("xt_FULLCONENAT: ct_event_cb(): [==================================WARNING================================] spin lock busy, handler skipped.\n");
-    return -EBUSY;
+    return -EAGAIN;
   }
 
   /* we dont know the conntrack direction for now so we try in both ways. */

@@ -277,10 +277,10 @@ static void handle_dying_tuples(void) {
       port = be16_to_cpu((ct_tuple->src).u.udp.port);
       mapping = get_mapping_by_int_src(ip, port);
       if (mapping != NULL) {
-        pr_debug("xt_FULLCONENAT: handle_dying_tuples(): dying conntrack at ext port %d\n", mapping->port);
+        pr_debug("xt_FULLCONENAT: handle_dying_tuples(): INBOUND dying conntrack at ext port %d\n", mapping->port);
       }
     } else {
-      pr_debug("xt_FULLCONENAT: handle_dying_tuples(): dying conntrack at ext port %d\n", mapping->port);
+      pr_debug("xt_FULLCONENAT: handle_dying_tuples(): OUTBOUND dying conntrack at ext port %d\n", mapping->port);
     }
 
     if (mapping == NULL) {

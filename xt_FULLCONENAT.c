@@ -14,6 +14,7 @@
 #include <linux/hashtable.h>
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
+#include <linux/workqueue.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter/x_tables.h>
@@ -71,6 +72,12 @@ struct nat_mapping {
 
 };
 
+struct tuple_list {
+  struct nf_conntrack_tuple tuple_original;
+  struct nf_conntrack_tuple tuple_reply;
+  struct list_head list;
+};
+
 struct nf_ct_event_notifier ct_event_notifier;
 int tg_refer_count = 0;
 int ct_event_notifier_registered = 0;
@@ -82,8 +89,11 @@ static DEFINE_HASHTABLE(mapping_table_by_int_src, HASHTABLE_BUCKET_BITS);
 
 static DEFINE_SPINLOCK(fullconenat_lock);
 
-/* this is needed to avoid dead lock stuck in ct_event_cb */
-static atomic_t mapping_check_busy;
+static LIST_HEAD(dying_tuple_list);
+static DEFINE_SPINLOCK(dying_tuple_list_lock);
+static void gc_worker(struct work_struct *work);
+static struct workqueue_struct *wq __read_mostly = NULL;
+static DECLARE_DELAYED_WORK(gc_worker_wk, gc_worker);
 
 static char tuple_tmp_string[512];
 /* non-atomic: can only be called serially within lock zones. */
@@ -214,10 +224,7 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
   list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
     original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
 
-    /* tell ct_event_cb() to skip checking at this time */
-    atomic_set(&mapping_check_busy, 1);
     tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
-    atomic_set(&mapping_check_busy, 0);
 
     if (tuple_hash == NULL) {
       pr_debug("xt_FULLCONENAT: check_mapping(): tuple %s dying/unconfirmed. free this tuple.\n", nf_ct_stringify_tuple(&original_tuple_item->tuple));
@@ -226,12 +233,11 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
       kfree(original_tuple_item);
       (mapping->refer_count)--;
     } else {
-      atomic_set(&mapping_check_busy, 1);
       ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
       if (ct != NULL)
         nf_ct_put(ct);
-      atomic_set(&mapping_check_busy, 0);
     }
+
   }
 
   /* kill the mapping if need */
@@ -245,19 +251,82 @@ static int check_mapping(struct nat_mapping* mapping, struct net *net, const str
   }
 }
 
+static void handle_dying_tuples(void) {
+  struct list_head *iter, *tmp, *iter_2, *tmp_2;
+  struct tuple_list *item;
+  struct nf_conntrack_tuple *ct_tuple;
+  struct nat_mapping *mapping;
+  __be32 ip;
+  uint16_t port;
+  struct nat_mapping_original_tuple *original_tuple_item;
+
+  spin_lock_bh(&fullconenat_lock);
+  spin_lock_bh(&dying_tuple_list_lock);
+
+  list_for_each_safe(iter, tmp, &dying_tuple_list) {
+    item = list_entry(iter, struct tuple_list, list);
+
+    /* we dont know the conntrack direction for now so we try in both ways. */
+    ct_tuple = &(item->tuple_original); 
+    ip = (ct_tuple->src).u3.ip;
+    port = be16_to_cpu((ct_tuple->src).u.udp.port);
+    mapping = get_mapping_by_int_src(ip, port);
+    if (mapping == NULL) {
+      ct_tuple = &(item->tuple_reply);
+      ip = (ct_tuple->src).u3.ip;
+      port = be16_to_cpu((ct_tuple->src).u.udp.port);
+      mapping = get_mapping_by_int_src(ip, port);
+      if (mapping != NULL) {
+        pr_debug("xt_FULLCONENAT: handle_dying_tuples(): dying conntrack at ext port %d\n", mapping->port);
+      }
+    } else {
+      pr_debug("xt_FULLCONENAT: handle_dying_tuples(): dying conntrack at ext port %d\n", mapping->port);
+    }
+
+    if (mapping == NULL) {
+      goto next;
+    }
+
+    /* look for the corresponding out-dated tuple and free it */
+    list_for_each_safe(iter_2, tmp_2, &mapping->original_tuple_list) {
+      original_tuple_item = list_entry(iter_2, struct nat_mapping_original_tuple, node);
+
+      if (nf_ct_tuple_equal(&original_tuple_item->tuple, &(item->tuple_original))) {
+        pr_debug("xt_FULLCONENAT: handle_dying_tuples(): tuple %s expired. free this tuple.\n",
+          nf_ct_stringify_tuple(&original_tuple_item->tuple));
+        list_del(&original_tuple_item->node);
+        kfree(original_tuple_item);
+        (mapping->refer_count)--;
+      }
+    }
+
+    /* then kill the mapping if needed*/
+    pr_debug("xt_FULLCONENAT: handle_dying_tuples(): refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
+    if (mapping->refer_count <= 0) {
+      pr_debug("xt_FULLCONENAT: handle_dying_tuples(): kill expired mapping at ext port %d\n", mapping->port);
+      kill_mapping(mapping);
+    }
+
+next:
+    list_del(&item->list);
+    kfree(item);
+  }
+
+  spin_unlock_bh(&dying_tuple_list_lock);
+  spin_unlock_bh(&fullconenat_lock);
+}
+
+static void gc_worker(struct work_struct *work) {
+  handle_dying_tuples();
+}
+
 /* conntrack destroy event callback function */
 static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
   struct nf_conn *ct;
-  struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
-  struct nat_mapping *mapping;
+  struct nf_conntrack_tuple *ct_tuple_reply, *ct_tuple_original;
   uint8_t protonum;
-  __be32 ip;
-  uint16_t port;
+  struct tuple_list *dying_tuple_item;
 
-  struct list_head *iter, *tmp;
-  struct nat_mapping_original_tuple *original_tuple_item;
-
-  unsigned long irq_flags;
 
   ct = item->ct;
   /* we handle only conntrack destroy events */
@@ -265,79 +334,33 @@ static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
     return 0;
   }
 
-  ct_tuple_origin = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+  ct_tuple_original = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
 
-  ct_tuple = &(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+  ct_tuple_reply = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
 
-  protonum = (ct_tuple->dst).protonum;
+  protonum = (ct_tuple_original->dst).protonum;
   if (protonum != IPPROTO_UDP) {
     return 0;
   }
 
-  if (atomic_read(&mapping_check_busy) > 0) {
-    /* if this event is triggered by nf_conntrack_find_get() called by check_mapping(),
-    * we just do nothing and let check_mapping() do the rest
-    * to avoid a dead spinlock. */
+  dying_tuple_item = kmalloc(sizeof(struct tuple_list), GFP_ATOMIC);
+
+  if (dying_tuple_item == NULL) {
+    pr_debug("xt_FULLCONENAT: warning: ct_event_cb(): kmalloc failed.\n");
     return 0;
   }
 
-  local_irq_save(irq_flags);
-  local_irq_disable();
-  preempt_disable();
+  memcpy(&(dying_tuple_item->tuple_original), ct_tuple_original, sizeof(struct nf_conntrack_tuple));
+  memcpy(&(dying_tuple_item->tuple_reply), ct_tuple_reply, sizeof(struct nf_conntrack_tuple));
 
-  if (!spin_trylock(&fullconenat_lock)) {
-    pr_debug("xt_FULLCONENAT: ct_event_cb(): [==================================WARNING================================] spin lock busy, handler skipped.\n");
+  spin_lock_bh(&dying_tuple_list_lock);
 
-    local_irq_restore(irq_flags);
-    preempt_enable();
+  list_add(&(dying_tuple_item->list), &dying_tuple_list);
 
-    return -EAGAIN;
-  }
+  spin_unlock_bh(&dying_tuple_list_lock);
 
-  /* we dont know the conntrack direction for now so we try in both ways. */
-  ip = (ct_tuple->src).u3.ip;
-  port = be16_to_cpu((ct_tuple->src).u.udp.port);
-  mapping = get_mapping_by_int_src(ip, port);
-  if (mapping == NULL) {
-    ct_tuple = &(ct->tuplehash[IP_CT_DIR_REPLY].tuple);
-    ip = (ct_tuple->src).u3.ip;
-    port = be16_to_cpu((ct_tuple->src).u.udp.port);
-    mapping = get_mapping_by_int_src(ip, port);
-    if (mapping != NULL) {
-      pr_debug("xt_FULLCONENAT: ct_event_cb(): IPCT_DESTROY event for INBOUND conntrack at ext port %d\n", mapping->port);
-    }
-  } else {
-    pr_debug("xt_FULLCONENAT: ct_event_cb(): IPCT_DESTROY event for OUTBOUND conntrack at ext port %d\n", mapping->port);
-  }
-
-  if (mapping == NULL) {
-    goto out;
-  }
-
-  /* look for the corresponding out-dated tuple and free it */
-  list_for_each_safe(iter, tmp, &mapping->original_tuple_list) {
-    original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
-
-    if (nf_ct_tuple_equal(&original_tuple_item->tuple, ct_tuple_origin)) {
-      pr_debug("xt_FULLCONENAT: ct_event_cb(): tuple %s expired. free this tuple.\n", nf_ct_stringify_tuple(ct_tuple_origin));
-      list_del(&original_tuple_item->node);
-      kfree(original_tuple_item);
-      (mapping->refer_count)--;
-    }
-  }
-
-  /* then kill the mapping if needed*/
-  pr_debug("xt_FULLCONENAT: ct_event_cb(): refer_count for mapping at ext_port %d is now %d\n", mapping->port, mapping->refer_count);
-  if (mapping->refer_count <= 0) {
-    pr_debug("xt_FULLCONENAT: ct_event_cb(): kill expired mapping at ext port %d\n", mapping->port);
-    kill_mapping(mapping);
-  }
-
-out:
-  spin_unlock(&fullconenat_lock);
-
-  local_irq_restore(irq_flags);
-  preempt_enable();
+  if (wq != NULL)
+    queue_delayed_work(wq, &gc_worker_wk, msecs_to_jiffies(100));
 
   return 0;
 }
@@ -647,7 +670,10 @@ static struct xt_target tg_reg[] __read_mostly = {
 
 static int __init fullconenat_tg_init(void)
 {
-  atomic_set(&mapping_check_busy, 0);
+  wq = create_singlethread_workqueue("xt_FULLCONENAT");
+  if (wq == NULL) {
+    printk("xt_FULLCONENAT: warning: failed to create workqueue\n");
+  }
 
   return xt_register_targets(tg_reg, ARRAY_SIZE(tg_reg));
 }
@@ -656,6 +682,13 @@ static void fullconenat_tg_exit(void)
 {
   xt_unregister_targets(tg_reg, ARRAY_SIZE(tg_reg));
 
+  if (wq) {
+    cancel_delayed_work_sync(&gc_worker_wk);
+    flush_workqueue(wq);
+    destroy_workqueue(wq);
+  }
+
+  handle_dying_tuples();
   destroy_mappings();
 }
 

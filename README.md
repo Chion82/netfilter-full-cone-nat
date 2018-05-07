@@ -12,7 +12,7 @@ Build
 ======
 Prerequisites: 
 * kernel source  
-* iptables source (git://git.netfilter.org/iptables.git) 
+* iptables source ( git://git.netfilter.org/iptables.git ) 
 
 Confirm the kernel configuration option `CONFIG_NF_CONNTRACK_EVENTS` is enabled. If this option is disabled on your system, enable it and rebuild your netfilter modules.
 
@@ -100,4 +100,12 @@ iptables -t nat -A POSTROUTING -o eth0 ! -p udp -j MASQUERADE
 iptables -t nat -A POSTROUTING -o eth0 -p udp -j FULLCONENAT --to-ports 40000-60000 --random-fully
 
 iptables -t nat -A PREROUTING -i eth0 -p udp -m multiport --dports 40000:60000 -j FULLCONENAT
+```
+
+Hairpin NAT (Assuming eth1 is LAN interface and IP range for LAN is 192.168.100.0/24):
+```
+iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
+iptables -t nat -A POSTROUTING -o eth1 -s 192.168.100.0/24 -j MASQUERADE
+iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
+iptables -t nat -A PREROUTING -i eth1 -j FULLCONENAT
 ```

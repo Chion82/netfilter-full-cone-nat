@@ -15,6 +15,9 @@
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+#include <linux/notifier.h>
+#endif
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter/x_tables.h>
@@ -78,7 +81,11 @@ struct tuple_list {
   struct list_head list;
 };
 
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+struct notifier_block ct_event_notifier;
+#else
 struct nf_ct_event_notifier ct_event_notifier;
+#endif
 int tg_refer_count = 0;
 int ct_event_notifier_registered = 0;
 
@@ -321,12 +328,16 @@ static void gc_worker(struct work_struct *work) {
 }
 
 /* conntrack destroy event callback function */
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+static int ct_event_cb(struct notifier_block *this, unsigned long events, void *ptr) {
+  struct nf_ct_event *item = ptr;
+#else
 static int ct_event_cb(unsigned int events, struct nf_ct_event *item) {
+#endif
   struct nf_conn *ct;
   struct nf_conntrack_tuple *ct_tuple_reply, *ct_tuple_original;
   uint8_t protonum;
   struct tuple_list *dying_tuple_item;
-
 
   ct = item->ct;
   /* we handle only conntrack destroy events */
@@ -614,7 +625,11 @@ static int fullconenat_tg_check(const struct xt_tgchk_param *par)
 
   if (tg_refer_count == 1) {
     nf_ct_netns_get(par->net, par->family);
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+    ct_event_notifier.notifier_call = ct_event_cb;
+#else
     ct_event_notifier.fcn = ct_event_cb;
+#endif
 
     if (nf_conntrack_register_notifier(par->net, &ct_event_notifier) == 0) {
       ct_event_notifier_registered = 1;

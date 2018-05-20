@@ -32,6 +32,10 @@
 
 #define HASHTABLE_BUCKET_BITS 10
 
+#ifndef NF_NAT_RANGE_PROTO_RANDOM_FULLY
+#define NF_NAT_RANGE_PROTO_RANDOM_FULLY (1 << 4)
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 
 static inline int nf_ct_netns_get(struct net *net, u8 nfproto) { return 0; }

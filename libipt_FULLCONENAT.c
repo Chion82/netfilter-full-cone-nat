@@ -8,6 +8,10 @@
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/netfilter/nf_nat.h>
 
+#ifndef NF_NAT_RANGE_PROTO_RANDOM_FULLY
+#define NF_NAT_RANGE_PROTO_RANDOM_FULLY (1 << 4)
+#endif
+
 enum {
 	O_TO_PORTS = 0,
 	O_RANDOM,

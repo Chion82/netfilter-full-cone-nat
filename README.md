@@ -16,14 +16,14 @@ Prerequisites:
 
 Confirm the kernel configuration option `CONFIG_NF_CONNTRACK_EVENTS` is enabled. If this option is disabled on your system, enable it and rebuild your netfilter modules.
 
-Kernel Module (as standalone module)
+Kernel Module (As a thrid-party module. Recommended.)
 -------------
 ```
 $ make
 # insmod xt_FULLCONENAT.ko
 ```
 
-Kernel Module (in-tree building)
+Kernel Module (In-tree building. Optional.)
 -------------
 1. Copy xt_FULLCONENAT.c to `kernel-source/net/netfilter/xt_FULLCONENAT.c`   
 2. Append following line to `kernel-source/net/netfilter/Makefile`:

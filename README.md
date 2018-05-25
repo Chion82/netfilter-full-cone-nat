@@ -16,7 +16,7 @@ Prerequisites:
 
 Confirm the kernel configuration option `CONFIG_NF_CONNTRACK_EVENTS` is enabled. If this option is disabled on your system, enable it and rebuild your netfilter modules.
 
-Kernel Module (As a thrid-party module. Recommended.)
+Kernel Module (As a third-party module. Recommended.)
 -------------
 ```
 $ make

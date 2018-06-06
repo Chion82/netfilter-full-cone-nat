@@ -16,15 +16,55 @@ Prerequisites:
 
 Confirm the kernel configuration option `CONFIG_NF_CONNTRACK_EVENTS` is enabled. If this option is disabled on your system, enable it and rebuild your netfilter modules.
 
-Kernel Module (As a third-party module. Recommended.)
+Kernel Module
 -------------
 ```
 $ make
 # insmod xt_FULLCONENAT.ko
 ```
 
-Kernel Module (In-tree building. Optional.)
--------------
+Iptables Extension
+------------------
+
+1. Copy libipt_FULLCONENAT.c to `iptables-source/extensions`.
+
+2. Under the iptables source directory, `./configure`(use `--prefix` to replace your current `iptables` by looking at `which iptables`), `make` and `make install`
+
+OpenWRT
+-------
+Package for openwrt is available at https://github.com/LGA1150/openwrt-fullconenat
+
+Usage
+=====
+
+Assuming eth0 is external interface:
+
+Basic Usage:
+
+```
+iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
+iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
+```
+
+Random port range:
+
+```
+iptables -t nat -A POSTROUTING -o eth0 ! -p udp -j MASQUERADE
+iptables -t nat -A POSTROUTING -o eth0 -p udp -j FULLCONENAT --to-ports 40000-60000 --random-fully
+
+iptables -t nat -A PREROUTING -i eth0 -p udp -m multiport --dports 40000:60000 -j FULLCONENAT
+```
+
+Hairpin NAT (Assuming eth1 is LAN interface and IP range for LAN is 192.168.100.0/24):
+```
+iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
+iptables -t nat -A POSTROUTING -o eth1 -s 192.168.100.0/24 -j MASQUERADE
+iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
+iptables -t nat -A PREROUTING -i eth1 -j FULLCONENAT
+```
+
+kernel Patch (Optional.)
+========================
 1. Copy xt_FULLCONENAT.c to `kernel-source/net/netfilter/xt_FULLCONENAT.c`   
 2. Append following line to `kernel-source/net/netfilter/Makefile`:
 
@@ -59,53 +99,5 @@ config NETFILTER_XT_TARGET_FULLCONENAT
 
 ```
 
-5. `cd` into the kernel source directory and prepare a working kernel config. This can be done by exporting from your current system:
-
-```
-zcat /proc/config.gz > .config
-```
-
-6. Run `make menuconfig` and select:
-    Networking support -> Network options -> Network packet filtering framework (Netfilter) -> IP: Netfilter Configuration -> <M> FULLCONENAT target support
-
-7. Prepare for building: `make prepare`
-
-8. Run `make` to build the kernel source. Alternatively, run `make modules SUBDIRS=net/netfilter` to build only the netfilter modules.
-
-9. Run `make modules_install` to install all built modules. Alternatively, manually load the xt_FULLCONENAT module by `insmod net/netfilter/xt_FULLCONENAT.ko`.
-
-IPtables extension
-------------------
-
-1. Copy libipt_FULLCONENAT.c and libipt_FULLCONENAT.t to `iptables-source/extensions`.
-
-2. Under the iptables source directory, `./configure`(use `--prefix` to replace your current `iptables` by looking at `which iptables`), `make` and `make install`
-
-Usage
-=====
-
-Assuming eth0 is external interface:
-
-Basic Usage:
-
-```
-iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
-iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
-```
-
-Random port range:
-
-```
-iptables -t nat -A POSTROUTING -o eth0 ! -p udp -j MASQUERADE
-iptables -t nat -A POSTROUTING -o eth0 -p udp -j FULLCONENAT --to-ports 40000-60000 --random-fully
-
-iptables -t nat -A PREROUTING -i eth0 -p udp -m multiport --dports 40000:60000 -j FULLCONENAT
-```
-
-Hairpin NAT (Assuming eth1 is LAN interface and IP range for LAN is 192.168.100.0/24):
-```
-iptables -t nat -A POSTROUTING -o eth0 -j FULLCONENAT
-iptables -t nat -A POSTROUTING -o eth1 -s 192.168.100.0/24 -j MASQUERADE
-iptables -t nat -A PREROUTING -i eth0 -j FULLCONENAT
-iptables -t nat -A PREROUTING -i eth1 -j FULLCONENAT
-```
+5. Run `make menuconfig` and select:
+    Networking support -> Network options -> Network packet filtering framework (Netfilter) -> IP: Netfilter Configuration -> \<M\> FULLCONENAT target support

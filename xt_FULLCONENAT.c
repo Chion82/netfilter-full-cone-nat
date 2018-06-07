@@ -385,6 +385,10 @@ static __be32 get_device_ip(const struct net_device* dev) {
   struct in_ifaddr* if_info;
   __be32 result;
 
+  if (dev == NULL) {
+    return 0;
+  }
+
   rcu_read_lock();
   in_dev = dev->ip_ptr;
   if (in_dev == NULL) {

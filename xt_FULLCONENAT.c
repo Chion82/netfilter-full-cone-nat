@@ -472,7 +472,11 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
   struct nat_mapping *mapping, *src_mapping;
   unsigned int ret;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+  struct nf_nat_range2 newrange;
+#else
   struct nf_nat_range newrange;
+#endif
 
   __be32 new_ip, ip;
   uint16_t port, original_port, want_port;

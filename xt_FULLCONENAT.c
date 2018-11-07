@@ -467,6 +467,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   struct nf_conn *ct;
   enum ip_conntrack_info ctinfo;
   struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
+  struct nf_conn_nat *nat;
 
   struct net_device *net_dev;
 
@@ -496,6 +497,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   ct = nf_ct_get(skb, &ctinfo);
   net = nf_ct_net(ct);
   zone = nf_ct_zone(ct);
+  nat = nfct_nat(ct);
 
   memset(&newrange.min_addr, 0, sizeof(newrange.min_addr));
   memset(&newrange.max_addr, 0, sizeof(newrange.max_addr));
@@ -589,6 +591,8 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
 
       }
     }
+
+    nat->masq_index = ifindex;
 
     new_ip = get_device_ip(skb->dev);
     newrange.min_addr.ip = new_ip;

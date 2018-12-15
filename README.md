@@ -101,3 +101,9 @@ config NETFILTER_XT_TARGET_FULLCONENAT
 
 5. Run `make menuconfig` and select:
     Networking support -> Network options -> Network packet filtering framework (Netfilter) -> IP: Netfilter Configuration -> \<M\> FULLCONENAT target support
+
+License
+=======
+Copyright 2018 Chion Tang [betaidc](https://www.betaidc.com/contact.html)
+GPL-2.0
+See LICENSE

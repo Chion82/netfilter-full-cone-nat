@@ -104,6 +104,6 @@ config NETFILTER_XT_TARGET_FULLCONENAT
 
 License
 =======
-Copyright 2018 Chion Tang [betaidc](https://www.betaidc.com/contact.html)
-GPL-2.0
+Copyright 2018 Chion Tang [betaidc](https://www.betaidc.com/contact.html)  
+GPL-2.0  
 See LICENSE

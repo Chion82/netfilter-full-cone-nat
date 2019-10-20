@@ -593,8 +593,7 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
     if(mr->range[0].flags & NF_NAT_RANGE_MAP_IPS) {
       newrange.min_addr.ip = mr->range[0].min_ip;
       newrange.max_addr.ip = mr->range[0].max_ip;
-    }
-    else {
+    } else {
       new_ip = get_device_ip(skb->dev);
       newrange.min_addr.ip = new_ip;
       newrange.max_addr.ip = new_ip;

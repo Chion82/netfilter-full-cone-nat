@@ -16,12 +16,15 @@ enum {
 	O_TO_PORTS = 0,
 	O_RANDOM,
 	O_RANDOM_FULLY,
+	O_TO_SRC,
 };
 
 static void FULLCONENAT_help(void)
 {
 	printf(
 "FULLCONENAT target options:\n"
+" --to-source [<ipaddr>[-<ipaddr>]]\n"
+"				Address to map source to.\n"
 " --to-ports <port>[-<port>]\n"
 "				Port (range) to map to.\n"
 " --random\n"
@@ -34,8 +37,41 @@ static const struct xt_option_entry FULLCONENAT_opts[] = {
 	{.name = "to-ports", .id = O_TO_PORTS, .type = XTTYPE_STRING},
 	{.name = "random", .id = O_RANDOM, .type = XTTYPE_NONE},
 	{.name = "random-fully", .id = O_RANDOM_FULLY, .type = XTTYPE_NONE},
+	{.name = "to-source", .id = O_TO_SRC, .type = XTTYPE_STRING},
 	XTOPT_TABLEEND,
 };
+
+static void parse_to(const char *orig_arg, struct nf_nat_ipv4_multi_range_compat *mr)
+{
+	char *arg, *dash, *error;
+	const struct in_addr *ip;
+
+	arg = strdup(orig_arg);
+	if (arg == NULL)
+		xtables_error(RESOURCE_PROBLEM, "strdup");
+
+	mr->range[0].flags |= NF_NAT_RANGE_MAP_IPS;
+	dash = strchr(arg, '-');
+
+	if (dash)
+		*dash = '\0';
+
+	ip = xtables_numeric_to_ipaddr(arg);
+	if (!ip)
+		xtables_error(PARAMETER_PROBLEM, "Bad IP address \"%s\"\n",
+			   arg);
+	mr->range[0].min_ip = ip->s_addr;
+	if (dash) {
+		ip = xtables_numeric_to_ipaddr(dash+1);
+		if (!ip)
+			xtables_error(PARAMETER_PROBLEM, "Bad IP address \"%s\"\n",
+				   dash+1);
+		mr->range[0].max_ip = ip->s_addr;
+	} else
+		mr->range[0].max_ip = mr->range[0].min_ip;
+
+	free(arg);
+}
 
 static void FULLCONENAT_init(struct xt_entry_target *t)
 {
@@ -102,6 +138,9 @@ static void FULLCONENAT_parse(struct xt_option_call *cb)
 				   "Need TCP, UDP, SCTP or DCCP with port specification");
 		parse_ports(cb->arg, mr);
 		break;
+	case O_TO_SRC:
+		parse_to(cb->arg, mr);
+		break;
 	case O_RANDOM:
 		mr->range[0].flags |=  NF_NAT_RANGE_PROTO_RANDOM;
 		break;
@@ -117,6 +156,17 @@ FULLCONENAT_print(const void *ip, const struct xt_entry_target *target,
 {
 	const struct nf_nat_ipv4_multi_range_compat *mr = (const void *)target->data;
 	const struct nf_nat_ipv4_range *r = &mr->range[0];
+
+	if (r->flags & NF_NAT_RANGE_MAP_IPS) {
+		struct in_addr a;
+
+		a.s_addr = r->min_ip;
+		printf(" to:%s", xtables_ipaddr_to_numeric(&a));
+		if (r->max_ip != r->min_ip) {
+			a.s_addr = r->max_ip;
+			printf("-%s", xtables_ipaddr_to_numeric(&a));
+		}
+	}
 
 	if (r->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
 		printf(" masq ports: ");
@@ -137,6 +187,17 @@ FULLCONENAT_save(const void *ip, const struct xt_entry_target *target)
 {
 	const struct nf_nat_ipv4_multi_range_compat *mr = (const void *)target->data;
 	const struct nf_nat_ipv4_range *r = &mr->range[0];
+
+	if (r->flags & NF_NAT_RANGE_MAP_IPS) {
+		struct in_addr a;
+
+		a.s_addr = r->min_ip;
+		printf(" --to-source %s", xtables_ipaddr_to_numeric(&a));
+		if (r->max_ip != r->min_ip) {
+			a.s_addr = r->max_ip;
+			printf("-%s", xtables_ipaddr_to_numeric(&a));
+		}
+	}
 
 	if (r->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
 		printf(" --to-ports %hu", ntohs(r->min.tcp.port));

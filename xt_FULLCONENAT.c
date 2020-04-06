@@ -48,11 +48,11 @@ static inline int nf_ct_netns_get(struct net *net, u8 nfproto) { return 0; }
 static inline void nf_ct_netns_put(struct net *net, u8 nfproto) {}
 
 static inline struct net_device *xt_in(const struct xt_action_param *par) {
-  return par->in;
+  return (struct net_device *)par->in;
 }
 
 static inline struct net_device *xt_out(const struct xt_action_param *par) {
-  return par->out;
+  return (struct net_device *)par->out;
 }
 
 static inline unsigned int xt_hooknum(const struct xt_action_param *par) {
@@ -235,7 +235,11 @@ static void kill_mapping6(struct nat_mapping6 *mapping) {
 /* check if a mapping is valid.
  * possibly delete and free an invalid mapping.
  * the mapping should not be used anymore after check_mapping6() returns 0. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static int check_mapping6(struct nat_mapping6* mapping, struct net *net, const struct nf_conntrack_zone *zone) {
+#else
+static int check_mapping6(struct nat_mapping6* mapping, struct net *net, const u16 zone) {
+#endif
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
   struct nf_conntrack_tuple_hash *tuple_hash;
@@ -274,7 +278,11 @@ static int check_mapping6(struct nat_mapping6* mapping, struct net *net, const s
   }
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const struct nf_conntrack_zone *zone) {
+#else
+static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const union nf_inet_addr *ext_ip, struct net *net, const u16 zone) {
+#endif
   struct nat_mapping6 *p_current;
   struct hlist_node *tmp;
 
@@ -287,7 +295,11 @@ static struct nat_mapping6* get_mapping6_by_ext_port(const uint16_t port, const 
   return NULL;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static uint16_t find_appropriate_port6(struct net *net, const struct nf_conntrack_zone *zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range) {
+#else
+static uint16_t find_appropriate_port6(struct net *net, const u16 zone, const uint16_t original_port, const union nf_inet_addr *ext_ip, const struct nf_nat_range *range) {
+#endif
   uint16_t min, start, selected, range_size, i;
   struct nat_mapping6* mapping = NULL;
 
@@ -338,14 +350,22 @@ static uint16_t find_appropriate_port6(struct net *net, const struct nf_conntrac
   return selected;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static void find_leastused_ip6(const struct nf_conntrack_zone *zone, const struct nf_nat_range *range, const union nf_inet_addr *src, const union nf_inet_addr *dst, union nf_inet_addr *var_ipp)
+#else
+static void find_leastused_ip6(const u16 zone, const struct nf_nat_range *range, const union nf_inet_addr *src, const union nf_inet_addr *dst, union nf_inet_addr *var_ipp)
+#endif
 {
   unsigned int i;
   /* Host order */
   u32 minip, maxip, j, dist;
   bool full_range;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
   j = jhash2((u32 *)src, 4, range->flags & NF_NAT_RANGE_PERSISTENT ? 0 : dst->all[3] ^ zone->id);
+#else
+  j = jhash2((u32 *)src, 4, range->flags & NF_NAT_RANGE_PERSISTENT ? 0 : dst->all[3] ^ zone);
+#endif
 
   full_range = false;
   for (i = 0; i <= 3; i++) {
@@ -373,7 +393,11 @@ static unsigned int fullconenat_tg6(struct sk_buff *skb, const struct xt_action_
 {
   const struct nf_nat_range *range;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
   const struct nf_conntrack_zone *zone;
+#else
+  u16 zone;
+#endif
   struct net *net;
   struct nf_conn *ct;
   enum ip_conntrack_info ctinfo;
@@ -664,7 +688,11 @@ static void destroy_mappings(void) {
 /* check if a mapping is valid.
  * possibly delete and free an invalid mapping.
  * the mapping should not be used anymore after check_mapping() returns 0. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static int check_mapping(struct nat_mapping* mapping, struct net *net, const struct nf_conntrack_zone *zone) {
+#else
+static int check_mapping(struct nat_mapping* mapping, struct net *net, const u16 zone) {
+#endif
   struct list_head *iter, *tmp;
   struct nat_mapping_original_tuple *original_tuple_item;
   struct nf_conntrack_tuple_hash *tuple_hash;
@@ -913,7 +941,11 @@ static __be32 get_device_ip(const struct net_device* dev) {
   }
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 static uint16_t find_appropriate_port(struct net *net, const struct nf_conntrack_zone *zone, const uint16_t original_port, const int ifindex, const struct nf_nat_ipv4_range *range) {
+#else
+static uint16_t find_appropriate_port(struct net *net, const u16 zone, const uint16_t original_port, const int ifindex, const struct nf_nat_ipv4_range *range) {
+#endif
   uint16_t min, start, selected, range_size, i;
   struct nat_mapping* mapping = NULL;
 
@@ -969,7 +1001,11 @@ static unsigned int fullconenat_tg(struct sk_buff *skb, const struct xt_action_p
   const struct nf_nat_ipv4_multi_range_compat *mr;
   const struct nf_nat_ipv4_range *range;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
   const struct nf_conntrack_zone *zone;
+#else
+  u16 zone;
+#endif
   struct net *net;
   struct nf_conn *ct;
   enum ip_conntrack_info ctinfo;

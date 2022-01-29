@@ -305,7 +305,7 @@ static uint16_t find_appropriate_port6(struct net *net, const u16 zone, const ui
 
   if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
     min = be16_to_cpu((range->min_proto).udp.port);
-    range_size = be16_to_cpu((range->min_proto).udp.port) - min + 1;
+    range_size = be16_to_cpu((range->max_proto).udp.port) - min + 1;
   } else {
     /* minimum port is 1024. same behavior as default linux NAT. */
     min = 1024;
